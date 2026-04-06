@@ -20,7 +20,7 @@ base_payload = {
         "index_type": "flat",
         "retrieval_strategy": "vector",
         "openrouter_api_key": "dummy_key_for_testing",
-        "llm_model": "meta-llama/llama-3.2-3b-instruct:free",
+        "llm_model": "openai/gpt-4o-mini",
     }
 }
 
@@ -38,22 +38,22 @@ def mock_documents():
     )
     ingestion._documents = {"doc1": doc1, "doc2": doc2}
     sparse_retriever.build_index([c.text for c in ingestion.get_all_chunks()])
-    build_all_indices(np.random.rand(2, 4096).astype(np.float32))
+    build_all_indices(np.random.rand(2, 1536).astype(np.float32))
     yield
     ingestion._documents = {}
     sparse_retriever.is_built = False
 
 @pytest.fixture(autouse=True)
 def mock_external_apis():
-    # Mock embeddings to return a random 4096-dim vector
+    # Mock embeddings to return a random vector (dim matches default embedding_dim)
     with patch("services.embedding.embed_query") as mock_embed_query, \
          patch("services.embedding.embed_texts") as mock_embed_texts, \
          patch("services.generation.OpenAI") as mock_gen_openai, \
          patch("services.agent.OpenAI") as mock_agent_openai, \
          patch("services.iterative.OpenAI") as mock_iterative_openai:
          
-        mock_embed_query.return_value = np.random.rand(1, 4096).astype(np.float32)
-        mock_embed_texts.return_value = np.random.rand(10, 4096).astype(np.float32)
+        mock_embed_query.return_value = np.random.rand(1, 1536).astype(np.float32)
+        mock_embed_texts.return_value = np.random.rand(10, 1536).astype(np.float32)
         
         # Mock standard LLM generation
         mock_msg = MagicMock()

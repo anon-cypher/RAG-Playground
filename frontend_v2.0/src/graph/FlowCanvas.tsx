@@ -11,20 +11,20 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 
-import type { RagNodeData } from './adapters';
 import { HANDLE_IN, HANDLE_OUT } from './adapters';
+import { GroupLane } from './GroupLane';
 import { RagNode } from './RagNode';
 
-const nodeTypes = { ragNode: RagNode };
+const nodeTypes = { ragNode: RagNode, group: GroupLane };
 
 function nextId(prefix: string): string {
   return `${prefix}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
 export type FlowCanvasProps = {
-  nodes: Node<RagNodeData>[];
+  nodes: Node[];
   edges: Edge[];
-  onNodesChange: import('@xyflow/react').OnNodesChange<Node<RagNodeData>>;
+  onNodesChange: import('@xyflow/react').OnNodesChange<Node>;
   onEdgesChange: import('@xyflow/react').OnEdgesChange;
   setEdges: React.Dispatch<React.SetStateAction<Edge[]>>;
   onDrop: (e: React.DragEvent) => void;

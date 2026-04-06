@@ -22,7 +22,15 @@ class TemplateGenerator(BaseGenerator):
         **kwargs
     ) -> tuple[str, dict]:
         usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-        
+        assembled = kwargs.get("assembled_prompt")
+        if assembled:
+            answer = (
+                f"[Template mode] Prompt length {len(assembled)} chars.\n\n"
+                f"---\n{assembled[:2000]}{'…' if len(assembled) > 2000 else ''}\n---\n"
+                f"*Connect an LLM provider for full generation.*"
+            )
+            return answer, usage
+
         if not context_chunks:
             return "No relevant documents found. Please upload documents first.", usage
 
@@ -69,6 +77,33 @@ class OpenRouterGenerator(BaseGenerator):
         **kwargs
     ) -> tuple[str, dict]:
         usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        assembled = kwargs.get("assembled_prompt")
+        if assembled:
+            system_prompt = (
+                "You are a helpful AI assistant. Answer using the user message, which may include "
+                "retrieved context and a question."
+            )
+            try:
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": str(assembled)},
+                    ],
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
+                content = response.choices[0].message.content
+                if content is None:
+                    content = "Error: No response content from OpenRouter."
+                if response.usage:
+                    usage["prompt_tokens"] = response.usage.prompt_tokens or 0
+                    usage["completion_tokens"] = response.usage.completion_tokens or 0
+                    usage["total_tokens"] = response.usage.total_tokens or 0
+                return content, usage
+            except Exception as e:
+                return f"Error generating response via OpenRouter: {str(e)}", usage
+
         if not context_chunks:
             return "No relevant documents found. Please upload documents first.", usage
 
@@ -131,13 +166,15 @@ def generate_answer(
     temperature: float = 0.7,
     max_tokens: int = 512,
     openrouter_api_key: Optional[str] = None,
-    llm_model: str = "meta-llama/llama-3-8b-instruct:free",
+    llm_model: str = "openai/gpt-4o-mini",
+    assembled_prompt: Optional[str] = None,
 ) -> tuple[str, dict]:
-    """Generate an answer given query and context chunks."""
+    """Generate an answer given query and context chunks, or a single assembled prompt from Prompt Augment."""
     gen = get_generator(api_key=openrouter_api_key, model=llm_model)
     return gen.generate(
         query=query,
         context_chunks=context_chunks,
         temperature=temperature,
         max_tokens=max_tokens,
+        assembled_prompt=assembled_prompt,
     )

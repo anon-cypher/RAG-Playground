@@ -5,8 +5,11 @@ export type NodeKind =
   | 'chunker'
   | 'embedder'
   | 'indexer'
+  | 'vector_store'
+  | 'query'
   | 'retriever'
   | 'reranker'
+  | 'prompt_augment'
   | 'llm'
   | 'output';
 
@@ -44,6 +47,19 @@ export interface NodeExecutionResult {
 export interface GraphExecutionResult {
   execution_order: string[];
   node_results: NodeExecutionResult[];
+}
+
+export interface ExecuteNodeResponse {
+  kind: NodeKind;
+  latency_ms: number;
+  output_summary: Record<string, unknown>;
+}
+
+export interface PreviewRetrievalResponse {
+  chunks: Array<Record<string, unknown>>;
+  query_used: string;
+  top_k: number;
+  error: string | null;
 }
 
 export interface DocumentSummary {

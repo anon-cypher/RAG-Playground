@@ -5,6 +5,10 @@ from models.pipeline import (
     PipelineTypesResponse,
     PipelineGraph,
     GraphExecutionResult,
+    ExecuteNodeRequest,
+    ExecuteNodeResponse,
+    PreviewRetrievalRequest,
+    PreviewRetrievalResponse,
 )
 from models.query import VisualizationData
 from services import pipeline as pipeline_service
@@ -89,6 +93,18 @@ async def execute_graph(graph: PipelineGraph):
     Later phases can plug actual RAG behavior into this hook.
     """
     return pipeline_service.execute_graph(graph)
+
+
+@router.post("/execute-node", response_model=ExecuteNodeResponse)
+async def execute_node(req: ExecuteNodeRequest):
+    """Execute a single node in isolation (optional inputs for experiments)."""
+    return pipeline_service.execute_node(req)
+
+
+@router.post("/preview-retrieval", response_model=PreviewRetrievalResponse)
+async def preview_retrieval(req: PreviewRetrievalRequest):
+    """Debounced vector search preview without sending the full graph."""
+    return pipeline_service.preview_retrieval(req.query, req.top_k)
 
 
 @router.get("/embedding-space", response_model=VisualizationData)

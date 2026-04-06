@@ -1,8 +1,11 @@
 import type {
   DocumentListResponse,
+  ExecuteNodeResponse,
   GraphExecutionResult,
   PipelineConfig,
   PipelineGraph,
+  PipelineNode,
+  PreviewRetrievalResponse,
   ProcessedDocument,
 } from '../types/pipeline';
 
@@ -46,6 +49,22 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(graph),
     }).then((r) => json<GraphExecutionResult>(r));
+  },
+
+  executeNode(node: PipelineNode, inputs: Record<string, unknown> = {}): Promise<ExecuteNodeResponse> {
+    return fetch(`${BASE}/pipeline/execute-node`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ node, inputs }),
+    }).then((r) => json<ExecuteNodeResponse>(r));
+  },
+
+  previewRetrieval(query: string, topK: number): Promise<PreviewRetrievalResponse> {
+    return fetch(`${BASE}/pipeline/preview-retrieval`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query, top_k: topK }),
+    }).then((r) => json<PreviewRetrievalResponse>(r));
   },
 
   getPipelineConfig(): Promise<PipelineConfig> {

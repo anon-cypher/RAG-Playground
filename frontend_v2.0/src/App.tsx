@@ -5,10 +5,11 @@ import type { Node } from '@xyflow/react';
 import { api } from './api/client';
 import { Palette } from './components/Palette';
 import { Inspector } from './components/Inspector';
+import { ExecutionOutputs } from './components/ExecutionOutputs';
 import { FlowCanvas } from './graph/FlowCanvas';
 import type { RagNodeData } from './graph/adapters';
-import { fromReactFlow, toReactFlow } from './graph/adapters';
-import { createBootstrapGraph, NODE_TYPES } from './graph/nodeCatalog';
+import { fromReactFlow } from './graph/adapters';
+import { createBootstrapReactFlow, NODE_TYPES } from './graph/nodeCatalog';
 import type { DocumentSummary, GraphExecutionResult, NodeKind } from './types/pipeline';
 
 import './App.css';
@@ -18,8 +19,8 @@ function nextId(prefix: string): string {
 }
 
 function AppContent() {
-  const initial = useMemo(() => toReactFlow(createBootstrapGraph()), []);
-  const [nodes, setNodes, onNodesChange] = useNodesState(initial.nodes as Node<RagNodeData>[]);
+  const initial = useMemo(() => createBootstrapReactFlow(), []);
+  const [nodes, setNodes, onNodesChange] = useNodesState(initial.nodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(initial.edges);
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -28,6 +29,11 @@ function AppContent() {
   const [exec, setExec] = useState<GraphExecutionResult | null>(null);
   const [runErr, setRunErr] = useState<string | null>(null);
   const [runBusy, setRunBusy] = useState(false);
+  const [nodeOutputCache, setNodeOutputCache] = useState<Record<string, Record<string, unknown>>>({});
+
+  const onNodeOutput = useCallback((nodeId: string, summary: Record<string, unknown>) => {
+    setNodeOutputCache((p) => ({ ...p, [nodeId]: summary }));
+  }, []);
 
   const { screenToFlowPosition } = useReactFlow();
 
@@ -49,7 +55,11 @@ function AppContent() {
   }, []);
 
   const selectedNode = useMemo(
-    () => (selectedId ? (nodes.find((n) => n.id === selectedId) ?? null) : null),
+    () =>
+      selectedId
+        ? ((nodes.find((n) => n.id === selectedId && n.type === 'ragNode') as Node<RagNodeData> | undefined) ??
+          null)
+        : null,
     [nodes, selectedId],
   );
 
@@ -112,6 +122,13 @@ function AppContent() {
       .executeGraph(graph)
       .then((r) => {
         setExec(r);
+        setNodeOutputCache((prev) => {
+          const next = { ...prev };
+          for (const nr of r.node_results) {
+            next[nr.node_id] = nr.output_summary as Record<string, unknown>;
+          }
+          return next;
+        });
         setRunBusy(false);
       })
       .catch((e: Error) => {
@@ -163,6 +180,8 @@ function AppContent() {
             onRefreshDocuments={refreshDocuments}
             selectedDocumentIds={selectedDocumentIds}
             toggleDocumentSelection={toggleDocumentSelection}
+            nodeOutputCache={nodeOutputCache}
+            onNodeOutput={onNodeOutput}
           />
 
           <div className="run-panel">
@@ -174,14 +193,13 @@ function AppContent() {
             </button>
             {runErr && <p className="inspector__error">{runErr}</p>}
             {exec && (
-              <div className="run-panel__out">
-                <strong>Execution order</strong>
-                <ol>
-                  {exec.execution_order.map((nid) => (
-                    <li key={nid}>{nid}</li>
-                  ))}
-                </ol>
-              </div>
+              <>
+                <div className="run-panel__order">
+                  <strong>Topological order</strong>
+                  <div className="run-panel__order-chain">{exec.execution_order.join(' → ')}</div>
+                </div>
+                <ExecutionOutputs result={exec} />
+              </>
             )}
           </div>
         </div>
