@@ -1,0 +1,39 @@
+Retrieval-Augmented Generation (RAG) is a technique that enhances large language models by retrieving relevant information from external knowledge sources before generating responses. This approach combines the strengths of retrieval-based and generation-based methods.
+
+Traditional language models rely solely on the knowledge encoded in their parameters during training. While these models can generate fluent text, they may produce outdated or inaccurate information. RAG addresses this limitation by grounding the generation process in retrieved documents.
+
+The RAG pipeline typically consists of several stages. First, the user submits a query. This query is then converted into a vector representation using an embedding model. The vector is used to search a document index for the most relevant passages. These passages are then provided as context to the language model, which generates a response based on both the query and the retrieved information.
+
+Vector databases play a crucial role in RAG systems. They store document embeddings and enable efficient similarity search. Popular vector databases include FAISS, Pinecone, Weaviate, and Chromadb. FAISS, developed by Facebook AI Research, is particularly popular for its efficiency and flexibility.
+
+FAISS supports multiple index types for different use cases. The Flat index performs exact nearest neighbor search using L2 distance or inner product. While accurate, it becomes slow for large datasets. The IVF (Inverted File) index partitions vectors into clusters using k-means, enabling faster search by only examining nearby clusters. The HNSW (Hierarchical Navigable Small World) index builds a graph structure for approximate nearest neighbor search, offering excellent speed-accuracy trade-offs.
+
+Document chunking is a critical preprocessing step in RAG. Documents must be split into smaller pieces that can be individually embedded and retrieved. Common chunking strategies include fixed-size chunking, where text is split at regular intervals, and overlapping chunking, where consecutive chunks share some text to preserve context across chunk boundaries.
+
+Semantic chunking is a more advanced approach that uses natural language understanding to split documents at semantically meaningful boundaries, such as paragraph or topic changes. This can improve retrieval quality by ensuring that each chunk contains a coherent piece of information.
+
+The embedding model converts text into dense vector representations that capture semantic meaning. Popular models include sentence-transformers, which are specifically trained to produce meaningful sentence-level embeddings. The all-MiniLM-L6-v2 model is a compact yet effective choice, producing 384-dimensional vectors.
+
+Re-ranking is an optional but powerful step in the RAG pipeline. After initial retrieval, a cross-encoder model can re-score the retrieved documents for better relevance ordering. Unlike the bi-encoder used for initial retrieval, which embeds documents and queries independently, a cross-encoder processes the query-document pair together, producing more accurate relevance scores.
+
+Hybrid retrieval combines multiple search strategies to improve recall. A common approach is to combine dense vector search with sparse keyword-based search (like BM25). The results from both methods are then merged using reciprocal rank fusion or weighted combination.
+
+The quality of a RAG system can be evaluated using several metrics. Recall@K measures the proportion of relevant documents retrieved in the top K results. Precision@K measures the proportion of retrieved documents that are relevant. Mean Reciprocal Rank (MRR) evaluates the ranking quality by considering the position of the first relevant result.
+
+Agentic RAG extends the basic pipeline by introducing an agent loop. The agent can plan its retrieval strategy, execute multiple retrieval steps, reason about the results, and refine its approach iteratively. This enables more complex question answering that may require information from multiple sources or multi-step reasoning.
+
+Prompt engineering plays a significant role in RAG system performance. The prompt template determines how retrieved context is presented to the language model. Effective templates clearly distinguish between the user's question and the retrieved context, and may include instructions about how to handle cases where the context doesn't contain sufficient information.
+
+Temperature and other generation parameters affect the output quality. Lower temperatures produce more deterministic and focused responses, while higher temperatures introduce more randomness and creativity. For factual question answering, lower temperatures are generally preferred.
+
+Cost optimization is an important consideration for production RAG systems. Embedding computation, vector search, and LLM inference all contribute to the total cost per query. Techniques like caching frequent queries, batching embedding computations, and using approximate search indices can significantly reduce costs.
+
+Observability in RAG systems involves tracking metrics at each pipeline stage. This includes embedding latency, retrieval latency, the number and quality of retrieved chunks, generation latency, token usage, and end-to-end response time. These metrics help identify bottlenecks and guide optimization efforts.
+
+Knowledge graphs can complement vector-based retrieval by capturing explicit relationships between entities. Graph-based retrieval enables structured queries that follow entity relationships, which can be particularly useful for questions requiring multi-hop reasoning.
+
+The choice of vector index depends on the specific requirements of the application. For small datasets (under 100,000 vectors), a flat index provides exact results with acceptable latency. For larger datasets, approximate methods like HNSW or IVF offer better scalability at the cost of slightly reduced accuracy.
+
+Metadata filtering allows retrieval to be constrained based on document attributes such as date, source, category, or other tags. This is particularly useful in enterprise settings where different users may have access to different document sets, or where temporal relevance is important.
+
+Document processing pipelines often need to handle multiple file formats, including PDF, HTML, DOCX, and plain text. Each format requires specific parsing logic to extract clean text while preserving important structural information like headings, tables, and lists.
