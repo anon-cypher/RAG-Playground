@@ -1,0 +1,28 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: rag-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - EMBEDDING_MODEL=openai/text-embedding-3-small
+      - EMBEDDING_DIM=1536
+    volumes:
+      - rag_backend_storage:/app/storage
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend_v2.0
+      dockerfile: Dockerfile
+    container_name: rag-frontend
+    depends_on:
+      - backend
+    ports:
+      - "5173:80"
+    restart: unless-stopped
+
+volumes:
+  rag_backend_storage:
