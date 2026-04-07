@@ -146,6 +146,18 @@ class ExecuteNodeResponse(BaseModel):
     output_summary: dict = Field(default_factory=dict)
 
 
+class VerifyOpenRouterKeyRequest(BaseModel):
+    """Validate an OpenRouter API key (not persisted by this request)."""
+
+    api_key: str = Field(..., min_length=1, max_length=4000)
+
+
+class CredentialsUpdate(BaseModel):
+    """Update API credentials in memory without triggering index rebuild (use /configure for full apply + rebuild)."""
+
+    openrouter_api_key: Optional[str] = None
+
+
 class PreviewRetrievalRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=4000)
     top_k: int = Field(default=5, ge=1, le=50)

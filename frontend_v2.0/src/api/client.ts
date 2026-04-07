@@ -7,9 +7,25 @@ import type {
   PipelineNode,
   PreviewRetrievalResponse,
   ProcessedDocument,
+  QueryRequest,
+  QueryResponse,
+  VisualizationData,
 } from '../types/pipeline';
 
 const BASE = 'http://localhost:8000/api';
+
+function friendlyHttpError(status: number, detail: string): string {
+  const trimmed = detail.trim().replace(/\s+/g, ' ');
+  const short = trimmed.length > 400 ? `${trimmed.slice(0, 400)}…` : trimmed;
+  if (status === 401 || status === 403) {
+    return short || 'Unauthorized — check your OpenRouter API key.';
+  }
+  if (status === 429) return short || 'Rate limited — try again shortly.';
+  if (status === 502 || status === 503 || status === 504) {
+    return short || 'Service temporarily unavailable — try again later.';
+  }
+  return short || `HTTP ${status}`;
+}
 
 async function json<T>(res: Response): Promise<T> {
   if (!res.ok) {
@@ -21,7 +37,7 @@ async function json<T>(res: Response): Promise<T> {
     } catch {
       /* ignore */
     }
-    throw new Error(detail || `HTTP ${res.status}`);
+    throw new Error(friendlyHttpError(res.status, detail));
   }
   return res.json() as Promise<T>;
 }
@@ -79,8 +95,51 @@ export const api = {
     }).then((r) => json<PipelineConfig>(r));
   },
 
+  /** Set API key on server without triggering index rebuild (see plan.md Phase 1). */
+  setCredentials(openrouterApiKey: string | null): Promise<PipelineConfig> {
+    return fetch(`${BASE}/pipeline/credentials`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ openrouter_api_key: openrouterApiKey ?? '' }),
+    }).then((r) => json<PipelineConfig>(r));
+  },
+
+  /** Verify OpenRouter key; does not persist it beyond optional server in-memory config. */
+  verifyOpenRouterKey(apiKey: string): Promise<{ ok: boolean }> {
+    return fetch(`${BASE}/pipeline/verify-key`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ api_key: apiKey }),
+    }).then((r) => json<{ ok: boolean }>(r));
+  },
+
   buildIndex(): Promise<unknown> {
     return fetch(`${BASE}/pipeline/build-index`, { method: 'POST' }).then((r) => json(r));
+  },
+
+  /** Full RAG query (includes optional 3D visualization from PCA). */
+  query(body: QueryRequest): Promise<QueryResponse> {
+    return fetch(`${BASE}/query`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then((r) => json<QueryResponse>(r));
+  },
+
+  /** Corpus-only 3D projection (no query neighbors). */
+  getEmbeddingSpace(params?: {
+    reduction_method?: 'pca' | 'umap';
+    selected_documents?: string[];
+  }): Promise<VisualizationData> {
+    const q = new URLSearchParams();
+    if (params?.reduction_method) q.set('reduction_method', params.reduction_method);
+    if (params?.selected_documents?.length) {
+      q.set('selected_documents', params.selected_documents.join(','));
+    }
+    const qs = q.toString();
+    return fetch(`${BASE}/pipeline/embedding-space${qs ? `?${qs}` : ''}`).then((r) =>
+      json<VisualizationData>(r),
+    );
   },
 };
 

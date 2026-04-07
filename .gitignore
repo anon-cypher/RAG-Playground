@@ -24,3 +24,4 @@ backend/venv/lib/python3.12/site-packages/torch-2.11.0.dist-info/zip-safe
 .idea/
 .pytest_cache/
 .pytest_cache/
+all_files.txt

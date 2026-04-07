@@ -428,7 +428,10 @@ function EmbedderPanel({
 
   return (
     <>
-      <p className="inspector__hint">Configure embeddings and build the FAISS index.</p>
+      <p className="inspector__hint">
+        Configure embeddings and build the FAISS index. Prefer the header <strong>Settings</strong> to save
+        your OpenRouter key across page reloads (this node can override for experiments).
+      </p>
       <div className="field">
         <label>OpenRouter API key</label>
         <input

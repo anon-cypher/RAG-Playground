@@ -65,6 +65,19 @@ def build_index() -> dict:
         embeddings = embedding.embed_texts(texts)
         embed_time = (time.perf_counter() - t0) * 1000
 
+        cfg = get_config()
+        obs_dim = int(embeddings.shape[1]) if embeddings.size else 0
+        if obs_dim and obs_dim != cfg.embedding_dim:
+            return {
+                "status": "dimension_mismatch",
+                "message": (
+                    f"Embedding vectors are {obs_dim}-d but pipeline is set to embedding_dim={cfg.embedding_dim}. "
+                    "Match embedding model + dimension in Settings / Embedder, then rebuild."
+                ),
+                "embedding_dim_observed": obs_dim,
+                "embedding_dim_configured": cfg.embedding_dim,
+            }
+
         # Build indices
         t0 = time.perf_counter()
         retrieval.build_all_indices(embeddings)
@@ -233,8 +246,11 @@ def execute_query(request: QueryRequest) -> QueryResponse:
         ))
         context_texts.append(chunk.text)
 
-    # Stage 3: Generation / Agentic
+    # Stage 3: Generation / Agentic (skipped for visualization-only requests)
     t0 = time.perf_counter()
+    answer = ""
+    gen_details: dict = {}
+
     def retriever_callback(sq):
         sq_v = embedding.embed_query(sq)
         dists, indexes = ret.search(sq_v, len(all_chunks))
@@ -245,7 +261,13 @@ def execute_query(request: QueryRequest) -> QueryResponse:
             if len(sq_chunks) >= top_k: break
         return sq_chunks
 
-    if rag_type == RagType.AGENTIC:
+    if request.visualization_only:
+        gen_details = {"type": "skipped", "reason": "visualization_only"}
+        gen_ms = (time.perf_counter() - t0) * 1000
+        stages.append(StageMetrics(
+            stage_name="generation", latency_ms=round(gen_ms, 2), details=gen_details
+        ))
+    elif rag_type == RagType.AGENTIC:
         from services.agent import run_agentic_loop
         answer, logs, usage = run_agentic_loop(
             query=request.query, initial_context=context_texts,
@@ -269,21 +291,23 @@ def execute_query(request: QueryRequest) -> QueryResponse:
         )
         gen_details = {"type": "standard", "model": cfg.llm_model, "usage": usage, "logs": [{"action": "Standard Synthesis Complete"}]}
 
-    avg_score = sum(c.score for c in retrieved_chunks) / len(retrieved_chunks) if retrieved_chunks else 0.0
-    gen_details["context_relevance_score"] = round(avg_score, 4)
-    # rough token estimate: total chars of context + query / 4
-    context_chars = sum(len(t) for t in context_texts)
-    gen_details["prompt_token_count"] = (context_chars + len(request.query)) // 4
-    gen_details["context_chunks_used"] = len(context_texts)
+    if not request.visualization_only:
+        avg_score = sum(c.score for c in retrieved_chunks) / len(retrieved_chunks) if retrieved_chunks else 0.0
+        gen_details["context_relevance_score"] = round(avg_score, 4)
+        # rough token estimate: total chars of context + query / 4
+        context_chars = sum(len(t) for t in context_texts)
+        gen_details["prompt_token_count"] = (context_chars + len(request.query)) // 4
+        gen_details["context_chunks_used"] = len(context_texts)
 
-    gen_ms = (time.perf_counter() - t0) * 1000
-    stages.append(StageMetrics(
-        stage_name="generation", latency_ms=round(gen_ms, 2),
-        details=gen_details
-    ))
+        gen_ms = (time.perf_counter() - t0) * 1000
+        stages.append(StageMetrics(
+            stage_name="generation", latency_ms=round(gen_ms, 2),
+            details=gen_details
+        ))
 
     # Optional 3D viz point coords mapping (we still pass valid indices to keep format stable)
-    query_vec_viz = query_vec if query_vec is not None else np.zeros((1, config.EMBEDDING_DIM), dtype=np.float32)
+    _edim = int(stored.shape[1]) if stored is not None and len(stored.shape) > 1 else cfg.embedding_dim
+    query_vec_viz = query_vec if query_vec is not None else np.zeros((1, _edim), dtype=np.float32)
     
     extra_edges = []
     if rag_type == RagType.GRAPH:

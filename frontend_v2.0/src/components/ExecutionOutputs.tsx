@@ -2,12 +2,24 @@ import type { GraphExecutionResult, NodeExecutionResult } from '../types/pipelin
 
 type Summary = Record<string, unknown>;
 
-export function ExecutionOutputs({ result }: { result: GraphExecutionResult | null }) {
+export function ExecutionOutputs({
+  result,
+  runAt,
+}: {
+  result: GraphExecutionResult | null;
+  /** ISO timestamp when this run finished (for logs / export). */
+  runAt?: string | null;
+}) {
   if (!result?.node_results?.length) return null;
 
   return (
     <div className="exec-outputs">
       <h4 className="exec-outputs__title">Pipeline output (per node)</h4>
+      {runAt && (
+        <p className="exec-outputs__runat" title="Run log timestamp">
+          Run at <time dateTime={runAt}>{runAt}</time>
+        </p>
+      )}
       <p className="exec-outputs__sub">
         Results follow the graph order. Fix errors shown in red before expecting a full answer.
       </p>
@@ -243,6 +255,7 @@ function VizLlm({ summary }: { summary: Summary }) {
   const ans = summary.answer != null ? String(summary.answer) : null;
   return (
     <div className="viz-llm">
+      <p className="viz-hint">Generation via OpenRouter chat completions. Raw HTTP messages are not shown; exports omit API keys.</p>
       {summary.model ? (
         <p className="viz-muted">
           Model <code>{String(summary.model)}</code>

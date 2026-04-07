@@ -10,6 +10,10 @@ class QueryRequest(BaseModel):
     index_type: Optional[str] = None  # Override pipeline config if set
     override_config: Optional[PipelineConfig] = None
     selected_documents: Optional[list[str]] = None
+    visualization_only: bool = Field(
+        default=False,
+        description="Skip LLM generation; return retrieval + 3D visualization only (faster, cheaper).",
+    )
 
 
 class RetrievedChunk(BaseModel):

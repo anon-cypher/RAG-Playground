@@ -5,6 +5,7 @@ export type RagNodeData = {
   kind: NodeKind;
   label: string;
   config: Record<string, unknown>;
+  runState?: 'idle' | 'running' | 'done';
 };
 
 export const HANDLE_IN = 'in';

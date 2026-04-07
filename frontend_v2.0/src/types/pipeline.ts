@@ -99,6 +99,63 @@ export interface ProcessedDocument {
   raw_text?: string;
 }
 
+/** 3D embedding visualization (PCA projection) — aligns with backend `models/query.py`. */
+export interface Point3D {
+  x: number;
+  y: number;
+  z: number;
+  label: string;
+  chunk_id: string;
+  is_query: boolean;
+  is_neighbor: boolean;
+  score: number;
+  document_id: string;
+  text_preview: string;
+}
+
+export interface VisualizationData {
+  points: Point3D[];
+  query_point: Point3D | null;
+  neighbor_indices: number[];
+  edges: number[][];
+  rag_mode: string;
+  caption: string;
+}
+
+export interface RetrievedChunk {
+  chunk_id: string;
+  document_id: string;
+  text: string;
+  score: number;
+  rank: number;
+  metadata: Record<string, unknown>;
+}
+
+export interface StageMetrics {
+  stage_name: string;
+  latency_ms: number;
+  details: Record<string, unknown>;
+}
+
+export interface QueryRequest {
+  query: string;
+  top_k?: number;
+  index_type?: string;
+  override_config?: Partial<PipelineConfig>;
+  selected_documents?: string[];
+  visualization_only?: boolean;
+}
+
+export interface QueryResponse {
+  query: string;
+  answer: string;
+  retrieved_chunks: RetrievedChunk[];
+  visualization: VisualizationData;
+  stage_metrics: StageMetrics[];
+  total_latency_ms: number;
+  pipeline_config: Record<string, unknown>;
+}
+
 export interface PipelineConfig {
   rag_type: string;
   index_type: string;
