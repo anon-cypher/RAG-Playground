@@ -1,6 +1,6 @@
 import { Canvas } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import * as THREE from 'three';
 import type { Point3D, VisualizationData } from '../types/pipeline';
 
@@ -137,7 +137,26 @@ export type EmbeddingSpace3DProps = {
   onSelect: (sel: VizSelection) => void;
 };
 
+function detectWebGLSupport(): boolean {
+  try {
+    const canvas = document.createElement('canvas');
+    const gl =
+      canvas.getContext('webgl2') ||
+      canvas.getContext('webgl') ||
+      canvas.getContext('experimental-webgl');
+    return Boolean(gl);
+  } catch {
+    return false;
+  }
+}
+
 export function EmbeddingSpace3D({ data, onSelect }: EmbeddingSpace3DProps) {
+  const [webglSupported, setWebglSupported] = useState(true);
+
+  useEffect(() => {
+    setWebglSupported(detectWebGLSupport());
+  }, []);
+
   const offset = useMemo(() => (data ? computeCenter(data) : [0, 0, 0]), [data]) as [
     number,
     number,
@@ -148,6 +167,99 @@ export function EmbeddingSpace3D({ data, onSelect }: EmbeddingSpace3DProps) {
     return (
       <div className="embedding-viz embedding-viz--empty">
         <p>No projection data. Run a query with an indexed corpus, or load embedding space.</p>
+      </div>
+    );
+  }
+
+  if (!webglSupported) {
+    const width = 900;
+    const height = 280;
+    const pad = 20;
+    const all2d = data.query_point ? [...data.points, data.query_point] : [...data.points];
+    const minX = Math.min(...all2d.map((p) => p.x));
+    const maxX = Math.max(...all2d.map((p) => p.x));
+    const minY = Math.min(...all2d.map((p) => p.y));
+    const maxY = Math.max(...all2d.map((p) => p.y));
+    const sx = (x: number) =>
+      pad + ((x - minX) / Math.max(1e-6, maxX - minX)) * (width - pad * 2);
+    const sy = (y: number) =>
+      height - pad - ((y - minY) / Math.max(1e-6, maxY - minY)) * (height - pad * 2);
+
+    const qIndex = data.points.length;
+    const edgePaths = data.edges
+      .slice(0, MAX_EDGE_SEGMENTS)
+      .map((edge, i) => {
+        if (!edge || edge.length < 2) return null;
+        const [a, b] = edge;
+        const pa =
+          a === qIndex && data.query_point
+            ? data.query_point
+            : a >= 0 && a < data.points.length
+              ? data.points[a]
+              : null;
+        const pb =
+          b === qIndex && data.query_point
+            ? data.query_point
+            : b >= 0 && b < data.points.length
+              ? data.points[b]
+              : null;
+        if (!pa || !pb) return null;
+        return (
+          <line
+            key={`e-${i}`}
+            x1={sx(pa.x)}
+            y1={sy(pa.y)}
+            x2={sx(pb.x)}
+            y2={sy(pb.y)}
+            stroke="#a78bfa"
+            strokeOpacity="0.55"
+            strokeWidth="1.2"
+          />
+        );
+      })
+      .filter(Boolean);
+
+    return (
+      <div className="embedding-viz embedding-viz--fallback">
+        <p className="embedding-viz__disclaimer">
+          <strong>3D disabled:</strong> WebGL is not available in this browser/runtime (`GL_VENDOR = Disabled`).
+          Showing a 2D PCA fallback instead.
+        </p>
+        <p className="embedding-viz__hint">
+          Click points to inspect chunk details. Axes are projected PCA dimensions (approximate).
+        </p>
+        <svg
+          className="embedding-viz__fallback-svg"
+          viewBox={`0 0 ${width} ${height}`}
+          role="img"
+          aria-label="2D embedding projection fallback"
+        >
+          <rect x="0" y="0" width={width} height={height} fill="rgba(2,6,23,0.4)" />
+          {edgePaths}
+          {data.points.map((p, i) => (
+            <circle
+              key={`p-${p.chunk_id || i}`}
+              cx={sx(p.x)}
+              cy={sy(p.y)}
+              r={p.is_neighbor ? 4.2 : 2.8}
+              fill={p.is_neighbor ? '#22d3ee' : '#64748b'}
+              onClick={() => onSelect({ type: 'chunk', index: i })}
+              style={{ cursor: 'pointer' }}
+            />
+          ))}
+          {data.query_point ? (
+            <circle
+              cx={sx(data.query_point.x)}
+              cy={sy(data.query_point.y)}
+              r={5.2}
+              fill="#fbbf24"
+              stroke="#fef3c7"
+              strokeWidth="1"
+              onClick={() => onSelect({ type: 'query' })}
+              style={{ cursor: 'pointer' }}
+            />
+          ) : null}
+        </svg>
       </div>
     );
   }
