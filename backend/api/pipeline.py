@@ -140,7 +140,9 @@ async def execute_node(req: ExecuteNodeRequest):
 @router.post("/preview-retrieval", response_model=PreviewRetrievalResponse)
 async def preview_retrieval(req: PreviewRetrievalRequest):
     """Debounced vector search preview without sending the full graph."""
-    return pipeline_service.preview_retrieval(req.query, req.top_k)
+    return pipeline_service.preview_retrieval(
+        req.query, req.top_k, selected_documents=req.selected_documents
+    )
 
 
 @router.get("/embedding-space", response_model=VisualizationData)

@@ -69,7 +69,8 @@ export const NODE_TYPES: NodeTypeDef[] = [
     label: 'Prompt augment',
     description: 'Assembles system + user prompt for the LLM.',
     defaultConfig: {
-      system_prompt: 'You are a helpful assistant. Use the context to answer.',
+      system_prompt:
+        'You are a helpful assistant. Use the numbered context blocks [1], [2], … When you use facts from a block, cite it in your answer with the same bracket number, e.g. [1].',
       user_template: 'Context:\n{context}\n\nQuestion:\n{query}',
       context_separator: '\n\n---\n\n',
     },

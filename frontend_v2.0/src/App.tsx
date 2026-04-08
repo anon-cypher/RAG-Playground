@@ -9,6 +9,8 @@ import { ExecutionOutputs } from './components/ExecutionOutputs';
 import { SettingsBar } from './components/SettingsBar';
 import { GlossaryModal } from './components/GlossaryModal';
 import { PipelineOrderHint } from './components/PipelineOrderHint';
+import { QueryExperimentPanel } from './components/QueryExperimentPanel';
+import { RunNarrative } from './components/RunNarrative';
 import { EmbeddingSpace3D, type VizSelection } from './components/EmbeddingSpace3D';
 import { FlowCanvas } from './graph/FlowCanvas';
 import type { RagNodeData } from './graph/adapters';
@@ -392,6 +394,19 @@ function AppContent() {
             {runErr && <p className="inspector__error">{runErr}</p>}
             {exec && (
               <>
+                <RunNarrative
+                  result={exec}
+                  runAt={runAt}
+                  onJumpToNode={(nodeId) => {
+                    setSelectedId(nodeId);
+                    window.setTimeout(() => {
+                      document.getElementById(`node-out-${nodeId}`)?.scrollIntoView({
+                        behavior: 'smooth',
+                        block: 'nearest',
+                      });
+                    }, 80);
+                  }}
+                />
                 <div className="run-panel__order">
                   <strong>Topological order</strong>
                   <div className="run-panel__order-chain">{exec.execution_order.join(' → ')}</div>
@@ -399,6 +414,7 @@ function AppContent() {
                 <ExecutionOutputs result={exec} runAt={runAt} />
               </>
             )}
+            <QueryExperimentPanel nodes={nodes} selectedDocumentIds={selectedDocumentIds} />
           </div>
         </div>
       </div>

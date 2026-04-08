@@ -1,4 +1,9 @@
+import { useEffect, useState } from 'react';
 import type { GraphExecutionResult, NodeExecutionResult } from '../types/pipeline';
+import {
+  approxTokensFromChars,
+  DEFAULT_TEACHING_CONTEXT_LIMIT,
+} from '../utils/tokenEstimate';
 
 type Summary = Record<string, unknown>;
 
@@ -10,6 +15,18 @@ export function ExecutionOutputs({
   /** ISO timestamp when this run finished (for logs / export). */
   runAt?: string | null;
 }) {
+  const [citationFocus, setCitationFocus] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (citationFocus == null) return;
+    window.setTimeout(() => {
+      document.getElementById(`citation-chunk-${citationFocus}`)?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'nearest',
+      });
+    }, 50);
+  }, [citationFocus]);
+
   if (!result?.node_results?.length) return null;
 
   return (
@@ -21,36 +38,135 @@ export function ExecutionOutputs({
         </p>
       )}
       <p className="exec-outputs__sub">
-        Results follow the graph order. Fix errors shown in red before expecting a full answer.
+        Results follow the graph order. Fix errors shown in red before expecting a full answer. Use{' '}
+        <strong>Sources</strong> below the LLM answer to highlight matching chunks by rank.
       </p>
       <div className="exec-outputs__list">
         {result.node_results.map((nr) => (
-          <NodeOutputCard key={nr.node_id} nr={nr} />
+          <NodeOutputCard
+            key={nr.node_id}
+            nr={nr}
+            citationFocus={citationFocus}
+            onPickCitation={setCitationFocus}
+          />
         ))}
       </div>
     </div>
   );
 }
 
-function NodeOutputCard({ nr }: { nr: NodeExecutionResult }) {
+function NodeOutputCard({
+  nr,
+  citationFocus,
+  onPickCitation,
+}: {
+  nr: NodeExecutionResult;
+  citationFocus: number | null;
+  onPickCitation: (rank: number | null) => void;
+}) {
   const s = nr.output_summary as Summary;
   const viz = String(s.viz ?? 'generic');
   const title = `${nr.kind} · ${String(s.label ?? nr.node_id)}`;
 
   return (
-    <article className="node-out">
+    <article className="node-out" id={`node-out-${nr.node_id}`}>
       <header className="node-out__head">
         <span className="node-out__title">{title}</span>
         <span className="node-out__latency">{nr.latency_ms.toFixed(1)} ms</span>
       </header>
       <div className="node-out__body">
-        <NodeViz viz={viz} summary={s} />
+        <NodeViz
+          viz={viz}
+          summary={s}
+          citationFocus={citationFocus}
+          onPickCitation={onPickCitation}
+        />
       </div>
     </article>
   );
 }
 
-function NodeViz({ viz, summary }: { viz: string; summary: Summary }) {
+function ContextBudgetStrip({ summary }: { summary: Summary }) {
+  const chars = Number(summary.char_count ?? 0);
+  const approxTok =
+    summary.approx_input_tokens != null
+      ? Number(summary.approx_input_tokens)
+      : approxTokensFromChars(chars);
+  const pct = Math.min(100, (approxTok / DEFAULT_TEACHING_CONTEXT_LIMIT) * 100);
+  const warn = approxTok > DEFAULT_TEACHING_CONTEXT_LIMIT * 0.85;
+  return (
+    <div className="context-budget">
+      <div className="context-budget__head">
+        <strong>Context budget (teaching estimate)</strong>
+        <span className="context-budget__nums">
+          ~{approxTok.toLocaleString()} tokens · {chars.toLocaleString()} chars · cap{' '}
+          {DEFAULT_TEACHING_CONTEXT_LIMIT.toLocaleString()} (typical modern chat model)
+        </span>
+      </div>
+      <div className="context-budget__bar" role="progressbar" aria-valuenow={Math.round(pct)} aria-valuemin={0} aria-valuemax={100}>
+        <div className="context-budget__fill" style={{ width: `${pct}%` }} />
+      </div>
+      <p className="context-budget__note">
+        Uses ~4 chars per token (rough). Real tokenizers differ; long prompts may truncate or cost more.
+        {warn ? ' You are approaching a range where truncation or quality loss is common.' : ''}
+      </p>
+    </div>
+  );
+}
+
+function scoreMatchHint(score: number, maxScore: number): string {
+  if (!(maxScore > 0) || !Number.isFinite(score)) return '';
+  const r = score / maxScore;
+  if (r >= 0.85) return 'Strong match (relative to this hit list)';
+  if (r >= 0.55) return 'Moderate';
+  if (r >= 0.3) return 'Weak';
+  return 'Marginal — verify in corpus';
+}
+
+function SourceStrip({
+  chunks,
+  citationFocus,
+  onPickCitation,
+}: {
+  chunks: Array<Record<string, unknown>>;
+  citationFocus: number | null;
+  onPickCitation: (rank: number | null) => void;
+}) {
+  if (!chunks.length) return null;
+  return (
+    <div className="citation-sources">
+      <span className="citation-sources__label">Sources (click to highlight in Retriever card)</span>
+      <div className="citation-sources__btns">
+        {chunks.map((c) => {
+          const rank = Number(c.rank);
+          const active = citationFocus === rank;
+          return (
+            <button
+              key={`${rank}-${String(c.chunk_id)}`}
+              type="button"
+              className={`citation-sources__btn${active ? ' citation-sources__btn--active' : ''}`}
+              onClick={() => onPickCitation(active ? null : rank)}
+            >
+              [{rank}]
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function NodeViz({
+  viz,
+  summary,
+  citationFocus,
+  onPickCitation,
+}: {
+  viz: string;
+  summary: Summary;
+  citationFocus: number | null;
+  onPickCitation: (rank: number | null) => void;
+}) {
   if (summary.error) {
     return <p className="node-out__err">{String(summary.error)}</p>;
   }
@@ -67,7 +183,12 @@ function NodeViz({ viz, summary }: { viz: string; summary: Summary }) {
     case 'query_text':
       return <VizQuery summary={summary} />;
     case 'retrieved_chunks':
-      return <VizRetrieved summary={summary} />;
+      return (
+        <VizRetrieved
+          summary={summary}
+          citationFocus={citationFocus}
+        />
+      );
     case 'vector_store':
       return <VizVectorStore summary={summary} />;
     case 'prompt_augment':
@@ -75,9 +196,21 @@ function NodeViz({ viz, summary }: { viz: string; summary: Summary }) {
     case 'reranker':
       return <VizReranker summary={summary} />;
     case 'llm_answer':
-      return <VizLlm summary={summary} />;
+      return (
+        <VizLlm
+          summary={summary}
+          citationFocus={citationFocus}
+          onPickCitation={onPickCitation}
+        />
+      );
     case 'final_output':
-      return <VizFinal summary={summary} />;
+      return (
+        <VizFinal
+          summary={summary}
+          citationFocus={citationFocus}
+          onPickCitation={onPickCitation}
+        />
+      );
     default:
       return <VizGeneric summary={summary} />;
   }
@@ -189,7 +322,10 @@ function VizPromptAugment({ summary }: { summary: Summary }) {
   const ap = String(summary.assembled_prompt ?? '');
   return (
     <div className="viz-prompt-aug">
-      <p className="viz-muted">{summary.char_count ? `${summary.char_count} characters` : ''}</p>
+      <ContextBudgetStrip summary={summary} />
+      <p className="viz-muted">
+        Context blocks use <code>[1]</code>, <code>[2]</code>, … so the model can cite sources.
+      </p>
       <pre className="viz-prompt-aug__pre">{ap || '—'}</pre>
     </div>
   );
@@ -205,7 +341,13 @@ function VizQuery({ summary }: { summary: Summary }) {
   );
 }
 
-function VizRetrieved({ summary }: { summary: Summary }) {
+function VizRetrieved({
+  summary,
+  citationFocus,
+}: {
+  summary: Summary;
+  citationFocus: number | null;
+}) {
   const chunks = (summary.chunks as Array<Record<string, unknown>>) ?? [];
   const maxScore = Math.max(0.001, ...chunks.map((c) => Number(c.score)));
   return (
@@ -220,11 +362,22 @@ function VizRetrieved({ summary }: { summary: Summary }) {
         {chunks.map((c) => {
           const sc = Number(c.score);
           const pct = Math.min(100, (sc / maxScore) * 100);
+          const rank = Number(c.rank);
+          const hint = scoreMatchHint(sc, maxScore);
+          const meta = c.metadata as Record<string, unknown> | undefined;
+          const rerankNote =
+            meta && meta['rerank_score'] != null ? ` · rerank score ${meta['rerank_score']}` : '';
+          const focused = citationFocus != null && citationFocus === rank;
           return (
-            <li key={`${String(c.chunk_id)}-${String(c.rank)}`} className="viz-chunk">
+            <li
+              key={`${String(c.chunk_id)}-${String(c.rank)}`}
+              className={`viz-chunk${focused ? ' viz-chunk--focus' : ''}`}
+              id={`citation-chunk-${rank}`}
+            >
               <div className="viz-chunk__head">
-                <span className="viz-chunk__rank">#{Number(c.rank)}</span>
+                <span className="viz-chunk__rank">[{rank}]</span>
                 <span className="viz-chunk__score">{sc.toFixed(4)}</span>
+                {hint ? <span className="viz-chunk__hint">{hint}{rerankNote}</span> : null}
               </div>
               <div className="viz-bar">
                 <div className="viz-bar__fill" style={{ width: `${pct}%` }} />
@@ -251,16 +404,30 @@ function VizReranker({ summary }: { summary: Summary }) {
   );
 }
 
-function VizLlm({ summary }: { summary: Summary }) {
+function VizLlm({
+  summary,
+  citationFocus,
+  onPickCitation,
+}: {
+  summary: Summary;
+  citationFocus: number | null;
+  onPickCitation: (rank: number | null) => void;
+}) {
   const ans = summary.answer != null ? String(summary.answer) : null;
+  const rawSources = summary.source_chunks as Array<Record<string, unknown>> | undefined;
+  const sourceChunks = Array.isArray(rawSources) ? rawSources : [];
   return (
     <div className="viz-llm">
-      <p className="viz-hint">Generation via OpenRouter chat completions. Raw HTTP messages are not shown; exports omit API keys.</p>
+      <p className="viz-hint">
+        Generation via OpenRouter chat completions. Raw HTTP messages are not shown; exports omit API keys.
+        Citation buttons link to the Retriever card when ranks match.
+      </p>
       {summary.model ? (
         <p className="viz-muted">
           Model <code>{String(summary.model)}</code>
         </p>
       ) : null}
+      <SourceStrip chunks={sourceChunks} citationFocus={citationFocus} onPickCitation={onPickCitation} />
       {ans ? (
         <div className="viz-answer">{ans}</div>
       ) : (
@@ -273,8 +440,18 @@ function VizLlm({ summary }: { summary: Summary }) {
   );
 }
 
-function VizFinal({ summary }: { summary: Summary }) {
+function VizFinal({
+  summary,
+  citationFocus,
+  onPickCitation,
+}: {
+  summary: Summary;
+  citationFocus: number | null;
+  onPickCitation: (rank: number | null) => void;
+}) {
   const fa = summary.final_answer != null ? String(summary.final_answer) : null;
+  const rawSources = summary.source_chunks as Array<Record<string, unknown>> | undefined;
+  const sourceChunks = Array.isArray(rawSources) ? rawSources : [];
   return (
     <div className="viz-final">
       {summary.query ? (
@@ -282,6 +459,7 @@ function VizFinal({ summary }: { summary: Summary }) {
           Q: <em>{String(summary.query)}</em>
         </p>
       ) : null}
+      <SourceStrip chunks={sourceChunks} citationFocus={citationFocus} onPickCitation={onPickCitation} />
       <div className="viz-final__answer">{fa ?? '—'}</div>
     </div>
   );

@@ -161,6 +161,10 @@ class CredentialsUpdate(BaseModel):
 class PreviewRetrievalRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=4000)
     top_k: int = Field(default=5, ge=1, le=50)
+    selected_documents: Optional[list[str]] = Field(
+        default=None,
+        description="Restrict preview to these document IDs (matches /query filtering).",
+    )
 
 
 class PreviewRetrievalResponse(BaseModel):

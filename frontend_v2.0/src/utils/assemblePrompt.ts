@@ -12,8 +12,9 @@ export function assemblePrompt(
   const userT = String(
     config['user_template'] ?? 'Context:\n{context}\n\nQuestion:\n{query}',
   );
-  const ctxBlock = contextTexts.length
-    ? contextTexts.join(sep)
+  const numbered = contextTexts.map((t, i) => `[${i + 1}] ${t}`);
+  const ctxBlock = numbered.length
+    ? numbered.join(sep)
     : '(no retrieved context yet)';
   const userFilled = userT.replace(/\{query\}/g, query).replace(/\{context\}/g, ctxBlock);
   return `${systemP}\n\n${userFilled}`.trim();

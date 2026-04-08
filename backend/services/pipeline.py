@@ -447,6 +447,8 @@ class ExecutionContext:
 
     query_text: str = ""
     context_texts: list[str] = field(default_factory=list)
+    # Ranked retrieval hits (chunk_id, score, …) for pedagogy / citations UI.
+    retrieved_hits: list[dict] = field(default_factory=list)
     assembled_prompt: Optional[str] = None
     answer: Optional[str] = None
 
@@ -585,6 +587,7 @@ def _graph_node_output(node: PipelineNode, ctx: ExecutionContext) -> dict:
             distances, indices = ret.search(query_vec, len(all_chunks))
             out_chunks: list[dict] = []
             ctx.context_texts.clear()
+            ctx.retrieved_hits.clear()
             for dist, idx in zip(distances[0], indices[0]):
                 ii = int(idx.item())
                 if ii < 0 or ii >= len(all_chunks):
@@ -603,6 +606,7 @@ def _graph_node_output(node: PipelineNode, ctx: ExecutionContext) -> dict:
                 ctx.context_texts.append(c.text)
                 if len(out_chunks) >= top_k:
                     break
+            ctx.retrieved_hits = [dict(c) for c in out_chunks]
             return {
                 "viz": "retrieved_chunks",
                 "query_used": q,
@@ -657,15 +661,21 @@ def _graph_node_output(node: PipelineNode, ctx: ExecutionContext) -> dict:
             node.config.get("user_template")
             or "Context:\n{context}\n\nQuestion:\n{query}"
         )
-        ctx_block = sep.join(ctx.context_texts) if ctx.context_texts else "(no retrieved context yet)"
+        if ctx.context_texts:
+            numbered_parts = [f"[{i}] {t}" for i, t in enumerate(ctx.context_texts, start=1)]
+            ctx_block = sep.join(numbered_parts)
+        else:
+            ctx_block = "(no retrieved context yet)"
         q = ctx.query_text or ""
         user_filled = user_t.replace("{query}", q).replace("{context}", ctx_block)
         full = f"{system_p}\n\n{user_filled}".strip()
         ctx.assembled_prompt = full
+        approx_tokens = max(1, len(full) // 4)
         return {
             "viz": "prompt_augment",
             "assembled_prompt": full,
             "char_count": len(full),
+            "approx_input_tokens": approx_tokens,
             "query_echo": q,
         }
 
@@ -681,6 +691,7 @@ def _graph_node_output(node: PipelineNode, ctx: ExecutionContext) -> dict:
                 "viz": "llm_answer",
                 "error": "Missing OpenRouter API key. Set it in pipeline config (Embedder) or environment.",
                 "answer": None,
+                "source_chunks": [],
             }
         ap = ctx.assembled_prompt
         try:
@@ -704,15 +715,32 @@ def _graph_node_output(node: PipelineNode, ctx: ExecutionContext) -> dict:
                     llm_model=llm_model,
                 )
             ctx.answer = answer
+            source_chunks: list[dict] = []
+            if ctx.retrieved_hits:
+                for h in ctx.retrieved_hits:
+                    source_chunks.append(
+                        {
+                            "rank": int(h.get("rank", 0)),
+                            "chunk_id": str(h.get("chunk_id", "")),
+                            "document_id": str(h.get("document_id", "")),
+                            "score": h.get("score"),
+                            "text_preview": str(h.get("text_preview", "")),
+                        }
+                    )
+            else:
+                for i, t in enumerate(texts, start=1):
+                    prev = (t[:400] + "…") if len(t) > 400 else t
+                    source_chunks.append({"rank": i, "chunk_id": "", "document_id": "", "score": None, "text_preview": prev})
             return {
                 "viz": "llm_answer",
                 "answer": answer,
                 "model": llm_model,
                 "usage": usage,
                 "used_assembled_prompt": bool(ap),
+                "source_chunks": source_chunks,
             }
         except Exception as ex:
-            return {"viz": "llm_answer", "error": str(ex), "answer": None}
+            return {"viz": "llm_answer", "error": str(ex), "answer": None, "source_chunks": []}
 
     # —— Output ——
     if k == NodeKind.OUTPUT:
@@ -720,6 +748,7 @@ def _graph_node_output(node: PipelineNode, ctx: ExecutionContext) -> dict:
             "viz": "final_output",
             "final_answer": ctx.answer,
             "query": ctx.query_text,
+            "source_chunks": [dict(h) for h in ctx.retrieved_hits],
         }
 
     return {"viz": "generic", "label": node.label, "config": node.config}
@@ -803,12 +832,17 @@ def execute_node(request: ExecuteNodeRequest) -> ExecuteNodeResponse:
     )
 
 
-def preview_retrieval(query: str, top_k: int) -> PreviewRetrievalResponse:
+def preview_retrieval(
+    query: str,
+    top_k: int,
+    selected_documents: Optional[list[str]] = None,
+) -> PreviewRetrievalResponse:
     """Lightweight vector search preview for debounced UI (no graph)."""
     cfg = get_config()
     q = (query or "").strip()
     if not q:
         return PreviewRetrievalResponse(error="Empty query", chunks=[], query_used="", top_k=top_k)
+    selected_set = set(selected_documents) if selected_documents else None
     try:
         query_vec = embedding.embed_query(q)
         ret = retrieval.get_or_create_retriever(
@@ -841,6 +875,8 @@ def preview_retrieval(query: str, top_k: int) -> PreviewRetrievalResponse:
             if ii < 0 or ii >= len(all_chunks):
                 continue
             c = all_chunks[ii]
+            if selected_set and c.document_id not in selected_set:
+                continue
             score = float(1.0 / (1.0 + float(dist.item())))
             out_chunks.append(
                 {

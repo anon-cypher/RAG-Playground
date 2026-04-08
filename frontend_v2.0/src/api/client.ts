@@ -75,11 +75,20 @@ export const api = {
     }).then((r) => json<ExecuteNodeResponse>(r));
   },
 
-  previewRetrieval(query: string, topK: number): Promise<PreviewRetrievalResponse> {
+  previewRetrieval(
+    query: string,
+    topK: number,
+    selectedDocuments?: string[],
+  ): Promise<PreviewRetrievalResponse> {
     return fetch(`${BASE}/pipeline/preview-retrieval`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query, top_k: topK }),
+      body: JSON.stringify({
+        query,
+        top_k: topK,
+        selected_documents:
+          selectedDocuments && selectedDocuments.length > 0 ? selectedDocuments : undefined,
+      }),
     }).then((r) => json<PreviewRetrievalResponse>(r));
   },
 
