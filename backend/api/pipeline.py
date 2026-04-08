@@ -5,6 +5,12 @@ from models.pipeline import (
     PipelineTypesResponse,
     PipelineGraph,
     GraphExecutionResult,
+    ExecuteNodeRequest,
+    ExecuteNodeResponse,
+    PreviewRetrievalRequest,
+    PreviewRetrievalResponse,
+    VerifyOpenRouterKeyRequest,
+    CredentialsUpdate,
 )
 from models.query import VisualizationData
 from services import pipeline as pipeline_service
@@ -16,6 +22,40 @@ router = APIRouter(prefix="/api/pipeline", tags=["pipeline"])
 async def get_pipeline_config():
     """Get current pipeline configuration."""
     return pipeline_service.get_config()
+
+
+@router.post("/credentials", response_model=PipelineConfig)
+async def set_credentials(body: CredentialsUpdate):
+    """
+    Update OpenRouter API key (and optionally other secrets) in memory only — does **not** rebuild the index.
+    Use this for UI key persistence; run Build index / pipeline configure when models change.
+    """
+    cfg = pipeline_service.get_config()
+    data = cfg.model_dump()
+    if body.openrouter_api_key is not None:
+        data["openrouter_api_key"] = body.openrouter_api_key or None
+    updated = PipelineConfig(**data)
+    return pipeline_service.set_config(updated)
+
+
+@router.post("/verify-key")
+async def verify_openrouter_key(body: VerifyOpenRouterKeyRequest):
+    """Check that an OpenRouter API key is accepted (does not store the key)."""
+    if not (body.api_key or "").strip():
+        raise HTTPException(400, "API key is required.")
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(
+            "https://openrouter.ai/api/v1/auth/key",
+            headers={"Authorization": f"Bearer {body.api_key.strip()}"},
+            timeout=20.0,
+        )
+    if resp.status_code == 401 or resp.status_code == 403:
+        raise HTTPException(401, "Invalid or unauthorized OpenRouter API key.")
+    if resp.status_code == 429:
+        raise HTTPException(429, "OpenRouter rate limit — try again shortly.")
+    if resp.status_code != 200:
+        raise HTTPException(502, "Could not verify key with OpenRouter.")
+    return {"ok": True}
 
 
 @router.post("/configure", response_model=PipelineConfig)
@@ -89,6 +129,18 @@ async def execute_graph(graph: PipelineGraph):
     Later phases can plug actual RAG behavior into this hook.
     """
     return pipeline_service.execute_graph(graph)
+
+
+@router.post("/execute-node", response_model=ExecuteNodeResponse)
+async def execute_node(req: ExecuteNodeRequest):
+    """Execute a single node in isolation (optional inputs for experiments)."""
+    return pipeline_service.execute_node(req)
+
+
+@router.post("/preview-retrieval", response_model=PreviewRetrievalResponse)
+async def preview_retrieval(req: PreviewRetrievalRequest):
+    """Debounced vector search preview without sending the full graph."""
+    return pipeline_service.preview_retrieval(req.query, req.top_k)
 
 
 @router.get("/embedding-space", response_model=VisualizationData)

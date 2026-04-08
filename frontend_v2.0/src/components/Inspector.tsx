@@ -1,27 +1,33 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { Node } from '@xyflow/react';
-import type { RagNodeData } from '../graph/adapters';
+import { reactNodeToPipeline, type RagNodeData } from '../graph/adapters';
 import { api, uploadDocumentStream } from '../api/client';
-import type { DocumentSummary, PipelineConfig } from '../types/pipeline';
+import type { DocumentSummary, PipelineConfig, PreviewRetrievalResponse } from '../types/pipeline';
 import { previewChunks, countBoundaryOverlapTokens } from '../utils/chunk-preview';
+import { assemblePrompt } from '../utils/assemblePrompt';
+import { buildExecuteNodeInputs } from '../utils/executeNodeInputs';
 
 type InspectorProps = {
   selected: Node<RagNodeData> | null;
-  allNodes: Node<RagNodeData>[];
-  setNodes: React.Dispatch<React.SetStateAction<Node<RagNodeData>[]>>;
+  allNodes: Node[];
+  setNodes: React.Dispatch<React.SetStateAction<Node[]>>;
   documents: DocumentSummary[];
   onRefreshDocuments: () => void;
   selectedDocumentIds: Set<string>;
   toggleDocumentSelection: (id: string) => void;
+  nodeOutputCache: Record<string, Record<string, unknown>>;
+  onNodeOutput: (nodeId: string, summary: Record<string, unknown>) => void;
 };
 
 function patchData(
-  setNodes: React.Dispatch<React.SetStateAction<Node<RagNodeData>[]>>,
+  setNodes: React.Dispatch<React.SetStateAction<Node[]>>,
   id: string,
   fn: (d: RagNodeData) => RagNodeData,
 ) {
   setNodes((nds) =>
-    nds.map((n) => (n.id === id ? { ...n, data: fn(n.data as RagNodeData) } : n)),
+    nds.map((n) =>
+      n.id === id && n.type === 'ragNode' ? { ...n, data: fn(n.data as RagNodeData) } : n,
+    ),
   );
 }
 
@@ -33,11 +39,16 @@ export function Inspector({
   onRefreshDocuments,
   selectedDocumentIds,
   toggleDocumentSelection,
+  nodeOutputCache,
+  onNodeOutput,
 }: InspectorProps) {
   const [runError, setRunError] = useState<string | null>(null);
+  const [runOneBusy, setRunOneBusy] = useState(false);
 
   const chunkerParams = useMemo(() => {
-    const c = allNodes.find((n) => n.data.kind === 'chunker');
+    const c = allNodes.find(
+      (n): n is Node<RagNodeData> => n.type === 'ragNode' && n.data.kind === 'chunker',
+    );
     const cfg = (c?.data.config ?? {}) as Record<string, unknown>;
     return {
       strategy: String(cfg['chunk_strategy'] ?? 'overlapping'),
@@ -45,6 +56,21 @@ export function Inspector({
       overlap: Number(cfg['overlap'] ?? 50),
     };
   }, [allNodes]);
+
+  const runThisNode = useCallback(async () => {
+    if (!selected) return;
+    setRunError(null);
+    setRunOneBusy(true);
+    try {
+      const inputs = buildExecuteNodeInputs(selected, allNodes, nodeOutputCache);
+      const res = await api.executeNode(reactNodeToPipeline(selected), inputs);
+      onNodeOutput(selected.id, res.output_summary as Record<string, unknown>);
+    } catch (e) {
+      setRunError((e as Error).message);
+    } finally {
+      setRunOneBusy(false);
+    }
+  }, [selected, allNodes, nodeOutputCache, onNodeOutput]);
 
   if (!selected) {
     return (
@@ -74,6 +100,20 @@ export function Inspector({
         <span className="inspector__kind">{data.kind}</span>
       </div>
 
+      <div className="inspector__run">
+        <button
+          type="button"
+          className="btn btn--primary"
+          disabled={runOneBusy}
+          onClick={() => void runThisNode()}
+        >
+          {runOneBusy ? 'Running…' : 'Run this node only'}
+        </button>
+        <p className="inspector__hint">
+          Uses query + cached retriever output when relevant. Run full pipeline to refresh cache.
+        </p>
+      </div>
+
       {data.kind === 'document_loader' && (
         <DocumentLoaderPanel
           chunkerParams={chunkerParams}
@@ -97,9 +137,33 @@ export function Inspector({
         <EmbedderPanel cfg={cfg} updateConfig={updateConfig} setRunError={setRunError} />
       )}
 
-      {data.kind !== 'document_loader' && data.kind !== 'chunker' && data.kind !== 'embedder' && (
-        <GenericConfig cfg={cfg} updateConfig={updateConfig} />
+      {data.kind === 'query' && (
+        <div className="field">
+          <label>Question (RAG query)</label>
+          <textarea
+            className="field__textarea"
+            rows={5}
+            value={String(cfg['query_text'] ?? '')}
+            placeholder="Ask something about your uploaded documents…"
+            onChange={(e) => updateConfig('query_text', e.target.value)}
+          />
+        </div>
       )}
+
+      {data.kind === 'prompt_augment' && (
+        <PromptAugmentPanel cfg={cfg as Record<string, unknown>} updateConfig={updateConfig} allNodes={allNodes} nodeOutputCache={nodeOutputCache} />
+      )}
+
+      {data.kind === 'retriever' && (
+        <RetrieverPreviewPanel allNodes={allNodes} cfg={cfg as Record<string, unknown>} updateConfig={updateConfig} />
+      )}
+
+      {data.kind !== 'document_loader' &&
+        data.kind !== 'chunker' &&
+        data.kind !== 'embedder' &&
+        data.kind !== 'query' &&
+        data.kind !== 'prompt_augment' &&
+        data.kind !== 'retriever' && <GenericConfig cfg={cfg} updateConfig={updateConfig} />}
 
       {runError && <p className="inspector__error">{runError}</p>}
     </aside>
@@ -364,7 +428,10 @@ function EmbedderPanel({
 
   return (
     <>
-      <p className="inspector__hint">Configure embeddings and build the FAISS index.</p>
+      <p className="inspector__hint">
+        Configure embeddings and build the FAISS index. Prefer the header <strong>Settings</strong> to save
+        your OpenRouter key across page reloads (this node can override for experiments).
+      </p>
       <div className="field">
         <label>OpenRouter API key</label>
         <input
@@ -378,7 +445,7 @@ function EmbedderPanel({
         <label>Embedding model</label>
         <input
           type="text"
-          value={String(cfg['embedding_model'] ?? 'qwen/qwen3-embedding-8b')}
+          value={String(cfg['embedding_model'] ?? 'openai/text-embedding-3-small')}
           onChange={(e) => updateConfig('embedding_model', e.target.value)}
         />
       </div>
@@ -386,13 +453,165 @@ function EmbedderPanel({
         <label>Embedding dim</label>
         <input
           type="number"
-          value={Number(cfg['embedding_dim'] ?? 4096)}
+          value={Number(cfg['embedding_dim'] ?? 1536)}
           onChange={(e) => updateConfig('embedding_dim', +e.target.value)}
         />
       </div>
       <button type="button" className="btn btn--primary" disabled={busy} onClick={build}>
         {busy ? 'Building…' : 'Build embeddings & index'}
       </button>
+    </>
+  );
+}
+
+function PromptAugmentPanel({
+  cfg,
+  updateConfig,
+  allNodes,
+  nodeOutputCache,
+}: {
+  cfg: Record<string, unknown>;
+  updateConfig: (k: string, v: unknown) => void;
+  allNodes: Node[];
+  nodeOutputCache: Record<string, Record<string, unknown>>;
+}) {
+  const qNode = allNodes.find(
+    (n): n is Node<RagNodeData> => n.type === 'ragNode' && n.data.kind === 'query',
+  );
+  const query = String(qNode?.data.config['query_text'] ?? '');
+  const retrieverNode = allNodes.find(
+    (n): n is Node<RagNodeData> => n.type === 'ragNode' && n.data.kind === 'retriever',
+  );
+  const retId = retrieverNode?.id;
+  const retSummary = retId ? nodeOutputCache[retId] : undefined;
+
+  const contextTexts = useMemo(() => {
+    const chunks = retSummary?.['chunks'] as Array<{ text_preview?: string }> | undefined;
+    return chunks?.map((c) => String(c.text_preview ?? '')) ?? [];
+  }, [retSummary]);
+
+  const live = useMemo(
+    () => assemblePrompt(cfg, query, contextTexts),
+    [cfg, query, contextTexts],
+  );
+
+  return (
+    <>
+      <div className="field">
+        <label>System prompt</label>
+        <textarea
+          className="field__textarea"
+          rows={4}
+          value={String(cfg['system_prompt'] ?? '')}
+          onChange={(e) => updateConfig('system_prompt', e.target.value)}
+        />
+      </div>
+      <div className="field">
+        <label>User template ({"{query}"}, {"{context}"})</label>
+        <textarea
+          className="field__textarea"
+          rows={5}
+          value={String(cfg['user_template'] ?? '')}
+          onChange={(e) => updateConfig('user_template', e.target.value)}
+        />
+      </div>
+      <div className="field">
+        <label>Context separator (between chunks)</label>
+        <input
+          type="text"
+          value={String(cfg['context_separator'] ?? '')}
+          onChange={(e) => updateConfig('context_separator', e.target.value)}
+        />
+      </div>
+      <div className="field">
+        <label>Live assembled prompt</label>
+        <pre className="inspector__prompt-preview">{live}</pre>
+      </div>
+    </>
+  );
+}
+
+const RETRIEVAL_DEBOUNCE_MS = 450;
+
+function RetrieverPreviewPanel({
+  allNodes,
+  cfg,
+  updateConfig,
+}: {
+  allNodes: Node[];
+  cfg: Record<string, unknown>;
+  updateConfig: (k: string, v: unknown) => void;
+}) {
+  const qNode = allNodes.find(
+    (n): n is Node<RagNodeData> => n.type === 'ragNode' && n.data.kind === 'query',
+  );
+  const query = String(qNode?.data.config['query_text'] ?? '');
+  const topK = Number(cfg['top_k'] ?? 5);
+
+  const [preview, setPreview] = useState<PreviewRetrievalResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [prevErr, setPrevErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    const q = query.trim();
+    if (!q) {
+      setPreview(null);
+      setPrevErr(null);
+      setLoading(false);
+      return;
+    }
+    setPrevErr(null);
+    const t = window.setTimeout(() => {
+      setLoading(true);
+      api
+        .previewRetrieval(q, topK)
+        .then((r) => {
+          setPreview(r);
+          if (r.error) setPrevErr(r.error);
+          else setPrevErr(null);
+        })
+        .catch((e: Error) => setPrevErr(e.message))
+        .finally(() => setLoading(false));
+    }, RETRIEVAL_DEBOUNCE_MS);
+    return () => window.clearTimeout(t);
+  }, [query, topK]);
+
+  return (
+    <>
+      <div className="field">
+        <label>top_k</label>
+        <input
+          type="number"
+          min={1}
+          max={50}
+          value={topK}
+          onChange={(e) => updateConfig('top_k', +e.target.value)}
+        />
+      </div>
+      <p className="inspector__hint">
+        Preview updates {RETRIEVAL_DEBOUNCE_MS}ms after query or top_k change (requires backend).
+      </p>
+      {loading && <p className="inspector__hint">Searching…</p>}
+      {prevErr && <p className="inspector__error">{prevErr}</p>}
+      {preview && preview.chunks.length > 0 && (
+        <div className="retrieval-preview">
+          <div className="retrieval-preview__head">
+            {preview.chunks.length} hit(s) · top_k={preview.top_k}
+          </div>
+          <ul className="retrieval-preview__list">
+            {preview.chunks.map((ch, i) => (
+              <li key={i} className="retrieval-preview__item">
+                <code className="retrieval-preview__meta">
+                  {String(ch['chunk_id'] ?? ch['document_id'] ?? i)}
+                </code>
+                <div className="retrieval-preview__text">
+                  {String(ch['text_preview'] ?? ch['text'] ?? '')}
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </>
   );
 }

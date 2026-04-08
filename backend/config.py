@@ -13,8 +13,8 @@ for d in [STORAGE_DIR, INDEX_DIR, UPLOAD_DIR]:
     d.mkdir(parents=True, exist_ok=True)
 
 # Embedding model (using API)
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "qwen/qwen3-embedding-8b")
-EMBEDDING_DIM = 4096  # Dimension for qwen/qwen3-embedding-8b
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "openai/text-embedding-3-small")
+EMBEDDING_DIM = 1536  # Default output dim for openai/text-embedding-3-small
 EMBEDDING_BATCH_SIZE = 32
 
 # Chunking defaults

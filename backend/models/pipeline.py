@@ -48,9 +48,9 @@ class PipelineConfig(BaseModel):
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     max_tokens: int = Field(default=512, ge=50, le=4096)
     openrouter_api_key: Optional[str] = Field(default=None, description="OpenRouter API Key")
-    llm_model: str = Field(default="meta-llama/llama-3.2-3b-instruct:free", description="OpenRouter Model ID")
-    embedding_model: str = Field(default="qwen/qwen3-embedding-8b", description="Embedding Model ID")
-    embedding_dim: int = Field(default=4096, description="Embedding Dimension")
+    llm_model: str = Field(default="openai/gpt-4o-mini", description="OpenRouter Model ID")
+    embedding_model: str = Field(default="openai/text-embedding-3-small", description="Embedding Model ID")
+    embedding_dim: int = Field(default=1536, description="Embedding Dimension")
 
 
 class StageMetrics(BaseModel):
@@ -71,8 +71,11 @@ class NodeKind(str, Enum):
     CHUNKER = "chunker"
     EMBEDDER = "embedder"
     INDEXER = "indexer"
+    QUERY = "query"
     RETRIEVER = "retriever"
+    VECTOR_STORE = "vector_store"
     RERANKER = "reranker"
+    PROMPT_AUGMENT = "prompt_augment"
     LLM = "llm"
     OUTPUT = "output"
 
@@ -126,3 +129,42 @@ class GraphExecutionResult(BaseModel):
 
     execution_order: list[str]
     node_results: list[NodeExecutionResult]
+
+
+class ExecuteNodeRequest(BaseModel):
+    """Run a single canvas node in isolation (optional explicit inputs for experiments)."""
+
+    node: PipelineNode
+    inputs: dict = Field(default_factory=dict)
+
+
+class ExecuteNodeResponse(BaseModel):
+    """Result of execute-node (same shape as one NodeExecutionResult without node_id/timestamps)."""
+
+    kind: NodeKind
+    latency_ms: float
+    output_summary: dict = Field(default_factory=dict)
+
+
+class VerifyOpenRouterKeyRequest(BaseModel):
+    """Validate an OpenRouter API key (not persisted by this request)."""
+
+    api_key: str = Field(..., min_length=1, max_length=4000)
+
+
+class CredentialsUpdate(BaseModel):
+    """Update API credentials in memory without triggering index rebuild (use /configure for full apply + rebuild)."""
+
+    openrouter_api_key: Optional[str] = None
+
+
+class PreviewRetrievalRequest(BaseModel):
+    query: str = Field(..., min_length=1, max_length=4000)
+    top_k: int = Field(default=5, ge=1, le=50)
+
+
+class PreviewRetrievalResponse(BaseModel):
+    chunks: list[dict] = Field(default_factory=list)
+    query_used: str = ""
+    top_k: int = 5
+    error: str | None = None

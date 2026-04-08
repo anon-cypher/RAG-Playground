@@ -1,6 +1,6 @@
 # RAG Playground — Workflow UI (v2)
 
-React + Vite + [@xyflow/react](https://reactflow.dev/) node canvas. Uses the same FastAPI backend as `../frontend` (Angular).
+React + Vite + [@xyflow/react](https://reactflow.dev/) node canvas. Connects to the FastAPI backend (`../backend`). Enter your **OpenRouter API key** in the app header (see repo root [README](../README.md)).
 
 ## Dev
 

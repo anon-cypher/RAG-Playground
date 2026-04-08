@@ -1,8 +1,10 @@
 """Pipeline orchestrator — ties together all services into a configurable RAG pipeline."""
 import time
+from dataclasses import dataclass, field
+from typing import Any, Callable, Optional
+
 import numpy as np
 from sklearn.decomposition import PCA
-from typing import Optional
 
 import config
 from models.pipeline import (
@@ -10,8 +12,13 @@ from models.pipeline import (
     StageMetrics,
     RetrievalStrategy,
     PipelineGraph,
+    PipelineNode,
     GraphExecutionResult,
     NodeExecutionResult,
+    NodeKind,
+    ExecuteNodeRequest,
+    ExecuteNodeResponse,
+    PreviewRetrievalResponse,
 )
 from models.query import (
     QueryRequest, QueryResponse, RetrievedChunk,
@@ -57,6 +64,19 @@ def build_index() -> dict:
         t0 = time.perf_counter()
         embeddings = embedding.embed_texts(texts)
         embed_time = (time.perf_counter() - t0) * 1000
+
+        cfg = get_config()
+        obs_dim = int(embeddings.shape[1]) if embeddings.size else 0
+        if obs_dim and obs_dim != cfg.embedding_dim:
+            return {
+                "status": "dimension_mismatch",
+                "message": (
+                    f"Embedding vectors are {obs_dim}-d but pipeline is set to embedding_dim={cfg.embedding_dim}. "
+                    "Match embedding model + dimension in Settings / Embedder, then rebuild."
+                ),
+                "embedding_dim_observed": obs_dim,
+                "embedding_dim_configured": cfg.embedding_dim,
+            }
 
         # Build indices
         t0 = time.perf_counter()
@@ -226,8 +246,11 @@ def execute_query(request: QueryRequest) -> QueryResponse:
         ))
         context_texts.append(chunk.text)
 
-    # Stage 3: Generation / Agentic
+    # Stage 3: Generation / Agentic (skipped for visualization-only requests)
     t0 = time.perf_counter()
+    answer = ""
+    gen_details: dict = {}
+
     def retriever_callback(sq):
         sq_v = embedding.embed_query(sq)
         dists, indexes = ret.search(sq_v, len(all_chunks))
@@ -238,7 +261,13 @@ def execute_query(request: QueryRequest) -> QueryResponse:
             if len(sq_chunks) >= top_k: break
         return sq_chunks
 
-    if rag_type == RagType.AGENTIC:
+    if request.visualization_only:
+        gen_details = {"type": "skipped", "reason": "visualization_only"}
+        gen_ms = (time.perf_counter() - t0) * 1000
+        stages.append(StageMetrics(
+            stage_name="generation", latency_ms=round(gen_ms, 2), details=gen_details
+        ))
+    elif rag_type == RagType.AGENTIC:
         from services.agent import run_agentic_loop
         answer, logs, usage = run_agentic_loop(
             query=request.query, initial_context=context_texts,
@@ -262,21 +291,23 @@ def execute_query(request: QueryRequest) -> QueryResponse:
         )
         gen_details = {"type": "standard", "model": cfg.llm_model, "usage": usage, "logs": [{"action": "Standard Synthesis Complete"}]}
 
-    avg_score = sum(c.score for c in retrieved_chunks) / len(retrieved_chunks) if retrieved_chunks else 0.0
-    gen_details["context_relevance_score"] = round(avg_score, 4)
-    # rough token estimate: total chars of context + query / 4
-    context_chars = sum(len(t) for t in context_texts)
-    gen_details["prompt_token_count"] = (context_chars + len(request.query)) // 4
-    gen_details["context_chunks_used"] = len(context_texts)
+    if not request.visualization_only:
+        avg_score = sum(c.score for c in retrieved_chunks) / len(retrieved_chunks) if retrieved_chunks else 0.0
+        gen_details["context_relevance_score"] = round(avg_score, 4)
+        # rough token estimate: total chars of context + query / 4
+        context_chars = sum(len(t) for t in context_texts)
+        gen_details["prompt_token_count"] = (context_chars + len(request.query)) // 4
+        gen_details["context_chunks_used"] = len(context_texts)
 
-    gen_ms = (time.perf_counter() - t0) * 1000
-    stages.append(StageMetrics(
-        stage_name="generation", latency_ms=round(gen_ms, 2),
-        details=gen_details
-    ))
+        gen_ms = (time.perf_counter() - t0) * 1000
+        stages.append(StageMetrics(
+            stage_name="generation", latency_ms=round(gen_ms, 2),
+            details=gen_details
+        ))
 
     # Optional 3D viz point coords mapping (we still pass valid indices to keep format stable)
-    query_vec_viz = query_vec if query_vec is not None else np.zeros((1, config.EMBEDDING_DIM), dtype=np.float32)
+    _edim = int(stored.shape[1]) if stored is not None and len(stored.shape) > 1 else cfg.embedding_dim
+    query_vec_viz = query_vec if query_vec is not None else np.zeros((1, _edim), dtype=np.float32)
     
     extra_edges = []
     if rag_type == RagType.GRAPH:
@@ -410,27 +441,306 @@ def _build_visualization_data(
     )
 
 
+@dataclass
+class ExecutionContext:
+    """Mutable state passed along the DAG (and optional execute-node inputs)."""
+
+    query_text: str = ""
+    context_texts: list[str] = field(default_factory=list)
+    assembled_prompt: Optional[str] = None
+    answer: Optional[str] = None
+
+
+def apply_execution_inputs(ctx: ExecutionContext, inputs: Optional[dict[str, Any]]) -> None:
+    if not inputs:
+        return
+    if "query_text" in inputs and inputs["query_text"] is not None:
+        ctx.query_text = str(inputs["query_text"])
+    if "context_texts" in inputs and inputs["context_texts"] is not None:
+        ctx.context_texts = list(inputs["context_texts"])
+    if "assembled_prompt" in inputs:
+        ctx.assembled_prompt = inputs.get("assembled_prompt")  # type: ignore[assignment]
+    if "answer" in inputs:
+        ctx.answer = inputs.get("answer")  # type: ignore[assignment]
+
+
+def _graph_node_output(node: PipelineNode, ctx: ExecutionContext) -> dict:
+    """
+    Produce a visualization-friendly output_summary for one node.
+    Mutates ctx: query_text, context_texts, answer — carried downstream in topo order.
+    """
+    cfg = get_config()
+    k = node.kind
+    if isinstance(k, str):
+        try:
+            k = NodeKind(k)
+        except ValueError:
+            return {"viz": "generic", "error": f"Unknown node kind: {k}", "label": node.label}
+
+    # —— Document loader ——
+    if k == NodeKind.DOCUMENT_LOADER:
+        docs = ingestion.list_documents()
+        rows = [
+            {
+                "document_id": d.document_id,
+                "filename": d.filename,
+                "chunks": d.total_chunks,
+                "characters": d.total_characters,
+            }
+            for d in docs
+        ]
+        return {
+            "viz": "documents_table",
+            "label": node.label,
+            "documents": rows,
+            "total_documents": len(rows),
+            "total_chunks": sum(d.total_chunks for d in docs),
+        }
+
+    # —— Chunker (stats from ingested store) ——
+    if k == NodeKind.CHUNKER:
+        chunks = ingestion.get_all_chunks()
+        prev = (chunks[0].text[:220] + "…") if chunks else ""
+        return {
+            "viz": "chunk_stats",
+            "total_chunks": len(chunks),
+            "total_characters": sum(len(c.text) for c in chunks),
+            "sample_preview": prev,
+        }
+
+    # —— Embedder ——
+    if k == NodeKind.EMBEDDER:
+        stored = retrieval.get_stored_embeddings()
+        nvec = int(stored.shape[0]) if stored is not None else 0
+        return {
+            "viz": "embedding_stats",
+            "embedding_model": cfg.embedding_model,
+            "embedding_dim": cfg.embedding_dim,
+            "total_vectors": nvec,
+            "status": "ready" if nvec > 0 else "no_vectors",
+            "hint": "Use Build index from the Embedder panel when vectors are missing.",
+        }
+
+    # —— Indexer ——
+    if k == NodeKind.INDEXER:
+        it = str(node.config.get("index_type") or cfg.index_type.value)
+        try:
+            ret = retrieval.get_or_create_retriever(
+                index_type=it,
+                hnsw_m=cfg.hnsw_m,
+                hnsw_ef_construction=cfg.hnsw_ef_construction,
+                hnsw_ef_search=cfg.hnsw_ef_search,
+            )
+            nv = ret.total_vectors if ret.is_built else 0
+            built = ret.is_built
+        except Exception as ex:
+            return {"viz": "index_stats", "error": str(ex), "index_type": it}
+        return {
+            "viz": "index_stats",
+            "index_type": it,
+            "total_vectors": nv,
+            "is_built": built,
+        }
+
+    # —— Query (user question for RAG) ——
+    if k == NodeKind.QUERY:
+        qt = str(node.config.get("query_text") or "").strip()
+        ctx.query_text = qt
+        return {
+            "viz": "query_text",
+            "query_text": qt,
+            "char_count": len(qt),
+        }
+
+    # —— Retriever ——
+    if k == NodeKind.RETRIEVER:
+        q = (ctx.query_text or "").strip()
+        top_k = int(node.config.get("top_k") or cfg.top_k)
+        if not q:
+            return {
+                "viz": "retrieved_chunks",
+                "error": "No query text. Connect a Query node upstream and enter your question.",
+                "chunks": [],
+            }
+        try:
+            query_vec = embedding.embed_query(q)
+            ret = retrieval.get_or_create_retriever(
+                index_type=cfg.index_type.value,
+                hnsw_m=cfg.hnsw_m,
+                hnsw_ef_construction=cfg.hnsw_ef_construction,
+                hnsw_ef_search=cfg.hnsw_ef_search,
+            )
+            stored = retrieval.get_stored_embeddings()
+            if stored is None or not ret.is_built:
+                build_index()
+                ret = retrieval.get_or_create_retriever(
+                    index_type=cfg.index_type.value,
+                    hnsw_m=cfg.hnsw_m,
+                    hnsw_ef_construction=cfg.hnsw_ef_construction,
+                    hnsw_ef_search=cfg.hnsw_ef_search,
+                )
+            all_chunks = ingestion.get_all_chunks()
+            if not all_chunks:
+                return {"viz": "retrieved_chunks", "error": "No chunks in store. Upload documents first.", "chunks": []}
+            distances, indices = ret.search(query_vec, len(all_chunks))
+            out_chunks: list[dict] = []
+            ctx.context_texts.clear()
+            for dist, idx in zip(distances[0], indices[0]):
+                ii = int(idx.item())
+                if ii < 0 or ii >= len(all_chunks):
+                    continue
+                c = all_chunks[ii]
+                score = float(1.0 / (1.0 + float(dist.item())))
+                out_chunks.append(
+                    {
+                        "rank": len(out_chunks) + 1,
+                        "score": round(score, 4),
+                        "text_preview": c.text[:300] + ("…" if len(c.text) > 300 else ""),
+                        "document_id": c.document_id,
+                        "chunk_id": c.chunk_id,
+                    }
+                )
+                ctx.context_texts.append(c.text)
+                if len(out_chunks) >= top_k:
+                    break
+            return {
+                "viz": "retrieved_chunks",
+                "query_used": q,
+                "top_k": top_k,
+                "chunks": out_chunks,
+                "retrieved_count": len(out_chunks),
+            }
+        except Exception as ex:
+            return {"viz": "retrieved_chunks", "error": str(ex), "chunks": []}
+
+    # —— Reranker ——
+    if k == NodeKind.RERANKER:
+        en = bool(node.config.get("enable"))
+        return {
+            "viz": "reranker",
+            "enabled": en,
+            "note": "Graph run uses vector order from Retriever; full cross-encoder reranking is available in the Query API.",
+            "upstream_context_chunks": len(ctx.context_texts),
+        }
+
+    # —— Vector store (health / browse; index built by Indexer) ——
+    if k == NodeKind.VECTOR_STORE:
+        it = str(node.config.get("index_type") or cfg.index_type.value)
+        chunks = ingestion.get_all_chunks()
+        try:
+            ret = retrieval.get_or_create_retriever(
+                index_type=it,
+                hnsw_m=cfg.hnsw_m,
+                hnsw_ef_construction=cfg.hnsw_ef_construction,
+                hnsw_ef_search=cfg.hnsw_ef_search,
+            )
+            nv = ret.total_vectors if ret.is_built else 0
+            built = ret.is_built
+        except Exception as ex:
+            return {"viz": "vector_store", "error": str(ex), "index_type": it}
+        sample_ids = [c.chunk_id for c in chunks[:12]]
+        return {
+            "viz": "vector_store",
+            "index_type": it,
+            "total_vectors": nv,
+            "total_chunks": len(chunks),
+            "is_built": built,
+            "sample_chunk_ids": sample_ids,
+            "note": "The Indexer builds FAISS indices; this node summarizes vector-store health.",
+        }
+
+    # —— Prompt augment (assemble prompt for LLM) ——
+    if k == NodeKind.PROMPT_AUGMENT:
+        sep = str(node.config.get("context_separator") or "\n\n---\n\n")
+        system_p = str(node.config.get("system_prompt") or "You are a helpful assistant.")
+        user_t = str(
+            node.config.get("user_template")
+            or "Context:\n{context}\n\nQuestion:\n{query}"
+        )
+        ctx_block = sep.join(ctx.context_texts) if ctx.context_texts else "(no retrieved context yet)"
+        q = ctx.query_text or ""
+        user_filled = user_t.replace("{query}", q).replace("{context}", ctx_block)
+        full = f"{system_p}\n\n{user_filled}".strip()
+        ctx.assembled_prompt = full
+        return {
+            "viz": "prompt_augment",
+            "assembled_prompt": full,
+            "char_count": len(full),
+            "query_echo": q,
+        }
+
+    # —— LLM ——
+    if k == NodeKind.LLM:
+        q = ctx.query_text or ""
+        texts = list(ctx.context_texts)
+        temp = float(node.config.get("temperature") if node.config.get("temperature") is not None else cfg.temperature)
+        max_tok = int(node.config.get("max_tokens") if node.config.get("max_tokens") is not None else cfg.max_tokens)
+        llm_model = str(node.config.get("llm_model") or cfg.llm_model)
+        if not cfg.openrouter_api_key:
+            return {
+                "viz": "llm_answer",
+                "error": "Missing OpenRouter API key. Set it in pipeline config (Embedder) or environment.",
+                "answer": None,
+            }
+        ap = ctx.assembled_prompt
+        try:
+            if ap:
+                answer, usage = generation.generate_answer(
+                    query=q,
+                    context_chunks=[],
+                    temperature=temp,
+                    max_tokens=max_tok,
+                    openrouter_api_key=cfg.openrouter_api_key,
+                    llm_model=llm_model,
+                    assembled_prompt=ap,
+                )
+            else:
+                answer, usage = generation.generate_answer(
+                    query=q,
+                    context_chunks=texts,
+                    temperature=temp,
+                    max_tokens=max_tok,
+                    openrouter_api_key=cfg.openrouter_api_key,
+                    llm_model=llm_model,
+                )
+            ctx.answer = answer
+            return {
+                "viz": "llm_answer",
+                "answer": answer,
+                "model": llm_model,
+                "usage": usage,
+                "used_assembled_prompt": bool(ap),
+            }
+        except Exception as ex:
+            return {"viz": "llm_answer", "error": str(ex), "answer": None}
+
+    # —— Output ——
+    if k == NodeKind.OUTPUT:
+        return {
+            "viz": "final_output",
+            "final_answer": ctx.answer,
+            "query": ctx.query_text,
+        }
+
+    return {"viz": "generic", "label": node.label, "config": node.config}
+
+
 def execute_graph(graph: PipelineGraph) -> GraphExecutionResult:
     """
-    Execute a visual pipeline graph as a pure DAG.
+    Execute a visual pipeline DAG in topological order.
 
-    Phase 1 keeps execution intentionally lightweight:
-    - Validate acyclicity.
-    - Compute a topological order.
-    - Emit per-node timing metadata and a small structural summary.
+    Each node gets a rich output_summary for the UI (documents, chunks, embeddings,
+    index, query, retrieved chunks, LLM answer, final output).
     """
-    # Build adjacency + in-degree for Kahn topological sort
     in_degree: dict[str, int] = {n.id: 0 for n in graph.nodes}
     adjacency: dict[str, list[str]] = {n.id: [] for n in graph.nodes}
 
     for edge in graph.edges:
         if edge.source_id not in adjacency or edge.target_id not in in_degree:
-            # Ignore dangling edges for now; frontend should prevent them.
             continue
         adjacency[edge.source_id].append(edge.target_id)
         in_degree[edge.target_id] += 1
 
-    # Initial frontier: all nodes with no incoming edges
     frontier = [nid for nid, deg in in_degree.items() if deg == 0]
     order: list[str] = []
 
@@ -442,45 +752,33 @@ def execute_graph(graph: PipelineGraph) -> GraphExecutionResult:
             if in_degree[neighbor] == 0:
                 frontier.append(neighbor)
 
-    # If we could not visit every node, the graph has a cycle; keep behavior explicit.
     if len(order) != len(graph.nodes):
-        # Fall back to original insertion order but still return something useful.
         order = [n.id for n in graph.nodes]
 
-    # Build quick lookup for convenience
     node_by_id = {n.id: n for n in graph.nodes}
-
     results: list[NodeExecutionResult] = []
-    current_time_ms = lambda: time.perf_counter() * 1000.0
+    ctx = ExecutionContext()
 
-    # Simulate per-node execution; later phases can plug real RAG stages here.
     for nid in order:
         node = node_by_id[nid]
-        started = current_time_ms()
-        # Minimal synthetic latency to make the animation meaningful on the UI.
-        # We avoid real sleeps here to keep the API snappy; frontend can animate.
-        finished = current_time_ms()
-        latency = finished - started
+        started_ms = time.perf_counter() * 1000.0
+        upstream_ids = [e.source_id for e in graph.edges if e.target_id == nid]
 
-        # Structural summary: which upstream nodes feed into this one.
-        upstream_ids = [
-            e.source_id
-            for e in graph.edges
-            if e.target_id == nid
-        ]
+        summary = _graph_node_output(node, ctx)
+        summary["label"] = node.label
+        summary["upstream_nodes"] = upstream_ids
+
+        finished_ms = time.perf_counter() * 1000.0
+        latency_ms = finished_ms - started_ms
 
         results.append(
             NodeExecutionResult(
                 node_id=nid,
                 kind=node.kind,
-                started_at_ms=started,
-                finished_at_ms=finished,
-                latency_ms=latency,
-                output_summary={
-                    "label": node.label,
-                    "config": node.config,
-                    "upstream_nodes": upstream_ids,
-                },
+                started_at_ms=started_ms,
+                finished_at_ms=finished_ms,
+                latency_ms=round(latency_ms, 3),
+                output_summary=summary,
             )
         )
 
@@ -488,6 +786,76 @@ def execute_graph(graph: PipelineGraph) -> GraphExecutionResult:
         execution_order=order,
         node_results=results,
     )
+
+
+def execute_node(request: ExecuteNodeRequest) -> ExecuteNodeResponse:
+    """Run a single node with optional explicit inputs (for experiments without a full graph)."""
+    ctx = ExecutionContext()
+    apply_execution_inputs(ctx, request.inputs)
+    t0 = time.perf_counter() * 1000.0
+    summary = _graph_node_output(request.node, ctx)
+    t1 = time.perf_counter() * 1000.0
+    summary.setdefault("label", request.node.label)
+    return ExecuteNodeResponse(
+        kind=request.node.kind,
+        latency_ms=round(t1 - t0, 3),
+        output_summary=summary,
+    )
+
+
+def preview_retrieval(query: str, top_k: int) -> PreviewRetrievalResponse:
+    """Lightweight vector search preview for debounced UI (no graph)."""
+    cfg = get_config()
+    q = (query or "").strip()
+    if not q:
+        return PreviewRetrievalResponse(error="Empty query", chunks=[], query_used="", top_k=top_k)
+    try:
+        query_vec = embedding.embed_query(q)
+        ret = retrieval.get_or_create_retriever(
+            index_type=cfg.index_type.value,
+            hnsw_m=cfg.hnsw_m,
+            hnsw_ef_construction=cfg.hnsw_ef_construction,
+            hnsw_ef_search=cfg.hnsw_ef_search,
+        )
+        stored = retrieval.get_stored_embeddings()
+        if stored is None or not ret.is_built:
+            build_index()
+            ret = retrieval.get_or_create_retriever(
+                index_type=cfg.index_type.value,
+                hnsw_m=cfg.hnsw_m,
+                hnsw_ef_construction=cfg.hnsw_ef_construction,
+                hnsw_ef_search=cfg.hnsw_ef_search,
+            )
+        all_chunks = ingestion.get_all_chunks()
+        if not all_chunks:
+            return PreviewRetrievalResponse(
+                error="No chunks in store. Upload documents first.",
+                chunks=[],
+                query_used=q,
+                top_k=top_k,
+            )
+        distances, indices = ret.search(query_vec, len(all_chunks))
+        out_chunks: list[dict] = []
+        for dist, idx in zip(distances[0], indices[0]):
+            ii = int(idx.item())
+            if ii < 0 or ii >= len(all_chunks):
+                continue
+            c = all_chunks[ii]
+            score = float(1.0 / (1.0 + float(dist.item())))
+            out_chunks.append(
+                {
+                    "rank": len(out_chunks) + 1,
+                    "score": round(score, 4),
+                    "text_preview": c.text[:300] + ("…" if len(c.text) > 300 else ""),
+                    "document_id": c.document_id,
+                    "chunk_id": c.chunk_id,
+                }
+            )
+            if len(out_chunks) >= top_k:
+                break
+        return PreviewRetrievalResponse(chunks=out_chunks, query_used=q, top_k=top_k, error=None)
+    except Exception as ex:
+        return PreviewRetrievalResponse(error=str(ex), chunks=[], query_used=q, top_k=top_k)
 
 
 def get_embedding_space(reduction_method: str = "pca", selected_documents: Optional[list[str]] = None) -> VisualizationData:

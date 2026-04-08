@@ -5,6 +5,7 @@ export type RagNodeData = {
   kind: NodeKind;
   label: string;
   config: Record<string, unknown>;
+  runState?: 'idle' | 'running' | 'done';
 };
 
 export const HANDLE_IN = 'in';
@@ -28,15 +29,28 @@ export function toReactFlow(graph: PipelineGraph): { nodes: Node<RagNodeData>[];
   return { nodes, edges };
 }
 
-export function fromReactFlow(nodes: Node<RagNodeData>[], edges: Edge[]): PipelineGraph {
-  const pipelineNodes: PipelineNode[] = nodes.map((n) => ({
+export function reactNodeToPipeline(n: Node<RagNodeData>): PipelineNode {
+  return {
     id: n.id,
     kind: n.data.kind,
     label: n.data.label,
     x: n.position.x,
     y: n.position.y,
     config: { ...n.data.config },
-  }));
+  };
+}
+
+export function fromReactFlow(nodes: Node[], edges: Edge[]): PipelineGraph {
+  const pipelineNodes: PipelineNode[] = nodes
+    .filter((n): n is Node<RagNodeData> => n.type === 'ragNode')
+    .map((n) => ({
+      id: n.id,
+      kind: n.data.kind,
+      label: n.data.label,
+      x: n.position.x,
+      y: n.position.y,
+      config: { ...n.data.config },
+    }));
   const pipelineEdges: PipelineEdge[] = edges.map((e) => ({
     id: e.id,
     source_id: e.source,

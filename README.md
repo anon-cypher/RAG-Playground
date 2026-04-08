@@ -1,130 +1,170 @@
-# 🧪 RAG Playground — Visualization & Experimentation Platform
+# RAG Playground
 
-An interactive platform for building, configuring, and **visualizing** RAG (Retrieval-Augmented Generation) pipelines in 3D.
+Interactive RAG (Retrieval-Augmented Generation) playground to **learn**, **visualize**, and **experiment** with every step of a modern RAG pipeline using OpenRouter-based models.
 
-![Phase](https://img.shields.io/badge/Phase-1%20MVP-6366f1)
 ![Backend](https://img.shields.io/badge/Backend-FastAPI-009688)
-![Frontend](https://img.shields.io/badge/Frontend-Angular%2019-dd0031)
-![3D](https://img.shields.io/badge/3D-Three.js-000000)
+![Frontend](https://img.shields.io/badge/Frontend-React%20%2B%20Vite-646cff)
+![Models](https://img.shields.io/badge/Models-OpenRouter-5a67d8)
+![Vector DB](https://img.shields.io/badge/Vector%20Index-FAISS-111827)
+![Status](https://img.shields.io/badge/Status-Active%20Development-22c55e)
 
-## ✨ Features (Phase 1)
+## Demo
 
-- **Document Ingestion** — Upload PDF/TXT files with configurable chunking (fixed or overlapping)
-- **Vector Retrieval** — FAISS-based search with Flat (exact) and HNSW (approximate) indices
-- **3D Embedding Visualization** — Interactive Three.js scene showing document vectors, query points, and nearest neighbor connections
-- **Pipeline Configuration** — Adjustable parameters (index type, top_k, HNSW M/efSearch, temperature)
-- **Stage Metrics** — Per-stage latency breakdown (embedding → retrieval → generation → visualization)
-- **Dark Theme UI** — Premium 3-panel layout with glassmorphism design
+![RAG Playground demo](assets/demo.gif)
 
-## 🏗️ Architecture
+> Put your recording at `assets/demo.gif` (repo root) to render this preview on GitHub.
 
-```
-┌─────────────┐    ┌──────────────────────────────────┐    ┌────────────┐
-│  Angular UI │◄──►│  FastAPI Backend (port 8000)      │    │   FAISS    │
-│  (port 4200)│    │                                    │◄──►│  Indices   │
-│             │    │  ┌──────────┐ ┌───────────────┐   │    └────────────┘
-│ Three.js 3D │    │  │Ingestion │ │SentenceTransf.│   │
-│ Document Up.│    │  │Service   │ │  Embeddings   │   │
-│ Pipeline Cfg│    │  └──────────┘ └───────────────┘   │
-│ Query Panel │    │  ┌──────────┐ ┌───────────────┐   │
-│ Metrics     │    │  │Retrieval │ │  Generation   │   │
-│             │    │  │(Flat/HNSW│ │  (Template)   │   │
-└─────────────┘    │  └──────────┘ └───────────────┘   │
-                   └──────────────────────────────────┘
-```
+## Purpose
 
-## 🚀 Quick Start
+This project is built to make RAG systems understandable and testable:
 
-### Prerequisites
+- See what each node does (loader, chunker, embedder, retriever, prompt augment, LLM).
+- Run individual nodes or full pipelines and inspect outputs.
+- Tune settings (`top_k`, chunk size, model IDs, temperature) and observe impact.
+- Explore semantic neighborhoods through projection visualizations.
+- Export run artifacts without leaking credentials.
 
-- **Python 3.10+**
-- **Node.js 18+**
+If you are learning RAG, this tool helps you bridge the gap between architecture diagrams and real execution.
 
-### 1. Backend Setup
+## Skill level
+
+- **Beginner**: Understand the RAG flow and inspect intermediate outputs.
+- **Intermediate**: Tune retrieval and prompting strategies, compare behavior.
+- **Advanced**: Extend node types, add evaluators, and benchmark model/index choices.
+
+## Core tags / topics
+
+`RAG` `OpenRouter` `FastAPI` `React` `XYFlow` `FAISS` `Embeddings` `Prompt Engineering` `Visualization` `PCA` `UMAP` `LLM Ops`
+
+## What you can do
+
+- Bring your own OpenRouter key from UI settings.
+- Upload `.txt` and `.pdf` documents.
+- Preview chunking before spending embedding tokens.
+- Build and inspect vector index health.
+- Query and view retrieved chunks with scores and metadata.
+- Assemble prompts with `{query}` + `{context}` templates.
+- Generate answers through OpenRouter models.
+- Visualize embedding neighborhoods (3D when WebGL is available, 2D fallback when not).
+- Export execution runs as JSON (API key redacted).
+
+## Architecture
+
+- **Backend** (`backend/`)
+  - FastAPI APIs
+  - Document ingestion and chunking
+  - OpenRouter embedding + generation
+  - FAISS indexing and retrieval
+  - Pipeline and query orchestration
+- **Frontend v2** (`frontend_v2.0/`)
+  - React + Vite
+  - XYFlow node-canvas editor
+  - Inspector panels + per-node run actions
+  - Projection visualization and run export
+
+## OpenRouter setup
+
+1. Create an API key at [OpenRouter](https://openrouter.ai/).
+2. Open the app and paste key in **Settings**.
+3. Click **Save key** (stored in browser + synced to backend session).
+4. Click **Test key** to validate.
+5. Pick model IDs in node configs (defaults are aligned with OpenRouter IDs).
+
+### Important notes
+
+- **Cost**: Embedding and chat requests are billable.
+- **Dimension matching**: Embedding model output dimension must match `embedding_dim` (e.g. 1536 for `openai/text-embedding-3-small`).
+- **Security**: Export files redact API keys. Still use caution on shared machines.
+
+## Quick start (local dev)
+
+### 1) Backend
 
 ```bash
 cd backend
-
-# Create virtual environment
 python -m venv venv
-source venv/bin/activate  # Linux/Mac
-# venv\Scripts\activate   # Windows
-
-# Install dependencies
+source venv/bin/activate   # Windows: venv\Scripts\activate
 pip install -r requirements.txt
-
-# Start server
-uvicorn main:app --reload --port 8000
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-> ℹ️ First startup downloads the embedding model (~80MB). API docs available at http://localhost:8000/docs
+Backend docs: `http://localhost:8000/docs`
 
-### 2. Frontend Setup
+### 2) Frontend
 
 ```bash
-cd frontend
-
-# Install dependencies (already done if scaffolded)
+cd frontend_v2.0
 npm install
-
-# Start dev server
-npx ng serve --open
+npm run dev
 ```
 
-Opens at http://localhost:4200
+Frontend (default): `http://localhost:5173`
 
-### 3. Try It Out
+## Docker Compose
 
-1. **Upload** `backend/data/sample.txt` via the Documents panel
-2. **Configure** the pipeline (try Flat vs HNSW)
-3. **Query**: "What is RAG?" or "How does HNSW work?"
-4. **Explore** the 3D visualization — orbit, zoom, hover over points
+Run everything together:
 
-## 📁 Project Structure
-
+```bash
+docker compose up --build
 ```
+
+If your Docker uses legacy compose:
+
+```bash
+docker-compose up --build
+```
+
+Services:
+
+- Frontend: `http://localhost:5173`
+- Backend API: `http://localhost:8000`
+- API docs: `http://localhost:8000/docs`
+
+Data persistence:
+
+- Backend storage is persisted using volume `rag_backend_storage`.
+
+## How to use (first run)
+
+1. Save and test OpenRouter key in **Settings**.
+2. Add a document in **Document Loader**.
+3. Configure **Chunker** and verify preview.
+4. Configure **Embedder** (model + dim) and build index.
+5. Enter a question in **Query**.
+6. Click **Run pipeline**.
+7. Inspect per-node outputs and retrieval details.
+8. Open projection view (`Query neighbors` / `Corpus only`).
+9. Export run JSON if needed.
+
+## API highlights
+
+| Method | Endpoint | Use |
+|--------|----------|-----|
+| POST | `/api/pipeline/credentials` | Set API key without index rebuild |
+| POST | `/api/pipeline/verify-key` | Validate OpenRouter key |
+| POST | `/api/pipeline/configure` | Apply full config (may trigger rebuild path) |
+| POST | `/api/pipeline/build-index` | Build/rebuild index |
+| POST | `/api/pipeline/execute-graph` | Run visual DAG |
+| POST | `/api/pipeline/execute-node` | Run one node in isolation |
+| POST | `/api/pipeline/preview-retrieval` | Fast retrieval preview |
+| POST | `/api/query` | End-to-end query (`visualization_only` supported) |
+| GET | `/api/pipeline/embedding-space` | Corpus projection (PCA/UMAP) |
+
+## Project structure
+
+```text
 RAG Playground/
 ├── backend/
-│   ├── main.py              # FastAPI app
-│   ├── config.py             # Configuration
-│   ├── models/               # Pydantic schemas
-│   ├── services/             # Core business logic
-│   │   ├── ingestion.py      #   Document parsing + chunking
-│   │   ├── embedding.py      #   SentenceTransformer wrapper
-│   │   ├── retrieval.py      #   FAISS (Flat + HNSW)
-│   │   ├── generation.py     #   Template-based generation
-│   │   └── pipeline.py       #   Pipeline orchestrator
-│   ├── api/                  # REST route handlers
-│   └── data/                 # Sample dataset
-└── frontend/                 # Angular 19 app
-    └── src/app/
-        ├── components/
-        │   ├── document-upload/
-        │   ├── pipeline-config/
-        │   ├── query-interface/
-        │   └── visualization/   # Three.js 3D scene
-        ├── services/
-        └── models/
+├── frontend_v2.0/
+├── docker-compose.yaml
+├── plan.md
+└── README.md
 ```
 
-## 🔌 API Endpoints
+## Roadmap
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/documents/upload` | Upload and process document |
-| GET | `/api/documents` | List all documents |
-| DELETE | `/api/documents/{id}` | Delete a document |
-| GET | `/api/pipeline/config` | Get pipeline configuration |
-| POST | `/api/pipeline/configure` | Update pipeline config |
-| GET | `/api/pipeline/types` | List available index types |
-| POST | `/api/query` | Execute RAG query |
+See [`plan.md`](plan.md) for phased checklist and implementation status.
 
-## 🗺️ Roadmap
-
-- **Phase 2**: IVF/PQ indices, cross-encoder re-ranking, enhanced visualizations
-- **Phase 3**: Hybrid (BM25 + vector), agentic RAG, graph retrieval
-- **Phase 4**: Experiment comparison dashboard, evaluation metrics (Recall@K, MRR)
-
-## 📄 License
+## License
 
 MIT
