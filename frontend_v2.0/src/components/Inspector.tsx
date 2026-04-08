@@ -2,10 +2,12 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { Node } from '@xyflow/react';
 import { reactNodeToPipeline, type RagNodeData } from '../graph/adapters';
 import { api, uploadDocumentStream } from '../api/client';
-import type { DocumentSummary, PipelineConfig, PreviewRetrievalResponse } from '../types/pipeline';
+import type { DocumentSummary, NodeKind, PipelineConfig, PreviewRetrievalResponse } from '../types/pipeline';
 import { previewChunks, countBoundaryOverlapTokens } from '../utils/chunk-preview';
 import { assemblePrompt } from '../utils/assemblePrompt';
 import { buildExecuteNodeInputs } from '../utils/executeNodeInputs';
+import { NODE_WHY } from '../utils/nodeWhy';
+import { approxTokensFromChars, DEFAULT_TEACHING_CONTEXT_LIMIT } from '../utils/tokenEstimate';
 
 type InspectorProps = {
   selected: Node<RagNodeData> | null;
@@ -100,6 +102,8 @@ export function Inspector({
         <span className="inspector__kind">{data.kind}</span>
       </div>
 
+      <NodeWhyPanel kind={data.kind} />
+
       <div className="inspector__run">
         <button
           type="button"
@@ -155,7 +159,12 @@ export function Inspector({
       )}
 
       {data.kind === 'retriever' && (
-        <RetrieverPreviewPanel allNodes={allNodes} cfg={cfg as Record<string, unknown>} updateConfig={updateConfig} />
+        <RetrieverPreviewPanel
+          allNodes={allNodes}
+          cfg={cfg as Record<string, unknown>}
+          updateConfig={updateConfig}
+          selectedDocumentIds={selectedDocumentIds}
+        />
       )}
 
       {data.kind !== 'document_loader' &&
@@ -167,6 +176,24 @@ export function Inspector({
 
       {runError && <p className="inspector__error">{runError}</p>}
     </aside>
+  );
+}
+
+function NodeWhyPanel({ kind }: { kind: NodeKind }) {
+  const w = NODE_WHY[kind];
+  if (!w) return null;
+  return (
+    <details className="node-why">
+      <summary className="node-why__summary">Why this step?</summary>
+      <dl className="node-why__dl">
+        <dt>Purpose</dt>
+        <dd>{w.purpose}</dd>
+        <dt>Common failures</dt>
+        <dd>{w.failures}</dd>
+        <dt>Check</dt>
+        <dd>{w.verify}</dd>
+      </dl>
+    </details>
   );
 }
 
@@ -314,6 +341,15 @@ function ChunkerPanel({
     );
   }, [rawText, strategy, chunkSize, overlap]);
 
+  const chunkTokenStats = useMemo(() => {
+    if (!chunks.length) return null;
+    const totalChars = chunks.reduce((a, s) => a + s.length, 0);
+    const approxTok = approxTokensFromChars(totalChars);
+    const perChunk = chunks.map((c) => approxTokensFromChars(c.length));
+    const avg = Math.round(perChunk.reduce((a, b) => a + b, 0) / perChunk.length);
+    return { count: chunks.length, approxTok, avg };
+  }, [chunks]);
+
   const overlapTokens = useCallback((ci: number) => {
     const cur = chunks[ci];
     const next = chunks[ci + 1];
@@ -373,6 +409,13 @@ function ChunkerPanel({
           onChange={(e) => updateConfig('overlap', +e.target.value)}
         />
       </div>
+      {chunkTokenStats && (
+        <p className="inspector__hint chunker-tokens">
+          ~<strong>{chunkTokenStats.count}</strong> chunks · ~<strong>{chunkTokenStats.approxTok}</strong> total
+          tokens (≈4 chars/token) · ~<strong>{chunkTokenStats.avg}</strong> tokens/chunk avg · embedding cost scales
+          with total tokens.
+        </p>
+      )}
       {loading && <p className="inspector__hint">Loading preview…</p>}
       {!loading && rawText && chunks.length > 0 && (
         <div className="chunkviz">
@@ -494,6 +537,8 @@ function PromptAugmentPanel({
     () => assemblePrompt(cfg, query, contextTexts),
     [cfg, query, contextTexts],
   );
+  const liveApproxTok = approxTokensFromChars(live.length);
+  const liveWarn = liveApproxTok > DEFAULT_TEACHING_CONTEXT_LIMIT * 0.85;
 
   return (
     <>
@@ -525,6 +570,11 @@ function PromptAugmentPanel({
       </div>
       <div className="field">
         <label>Live assembled prompt</label>
+        <p className={`inspector__hint${liveWarn ? ' inspector__hint--warn' : ''}`}>
+          ~{liveApproxTok.toLocaleString()} tokens (estimate) · {live.length.toLocaleString()} chars · teaching cap{' '}
+          {DEFAULT_TEACHING_CONTEXT_LIMIT.toLocaleString()}
+          {liveWarn ? ' — getting large; real models may truncate.' : ''}
+        </p>
         <pre className="inspector__prompt-preview">{live}</pre>
       </div>
     </>
@@ -537,10 +587,12 @@ function RetrieverPreviewPanel({
   allNodes,
   cfg,
   updateConfig,
+  selectedDocumentIds,
 }: {
   allNodes: Node[];
   cfg: Record<string, unknown>;
   updateConfig: (k: string, v: unknown) => void;
+  selectedDocumentIds: Set<string>;
 }) {
   const qNode = allNodes.find(
     (n): n is Node<RagNodeData> => n.type === 'ragNode' && n.data.kind === 'query',
@@ -561,10 +613,12 @@ function RetrieverPreviewPanel({
       return;
     }
     setPrevErr(null);
+    const docFilter =
+      selectedDocumentIds.size > 0 ? Array.from(selectedDocumentIds) : undefined;
     const t = window.setTimeout(() => {
       setLoading(true);
       api
-        .previewRetrieval(q, topK)
+        .previewRetrieval(q, topK, docFilter)
         .then((r) => {
           setPreview(r);
           if (r.error) setPrevErr(r.error);
@@ -574,7 +628,7 @@ function RetrieverPreviewPanel({
         .finally(() => setLoading(false));
     }, RETRIEVAL_DEBOUNCE_MS);
     return () => window.clearTimeout(t);
-  }, [query, topK]);
+  }, [query, topK, selectedDocumentIds]);
 
   return (
     <>
@@ -601,9 +655,15 @@ function RetrieverPreviewPanel({
           <ul className="retrieval-preview__list">
             {preview.chunks.map((ch, i) => (
               <li key={i} className="retrieval-preview__item">
-                <code className="retrieval-preview__meta">
-                  {String(ch['chunk_id'] ?? ch['document_id'] ?? i)}
-                </code>
+                <div className="retrieval-preview__row">
+                  <span className="retrieval-preview__rank">[{String(ch['rank'] ?? i + 1)}]</span>
+                  {ch['score'] != null ? (
+                    <span className="retrieval-preview__score">{Number(ch['score']).toFixed(4)}</span>
+                  ) : null}
+                  <code className="retrieval-preview__meta">
+                    {String(ch['chunk_id'] ?? ch['document_id'] ?? i)}
+                  </code>
+                </div>
                 <div className="retrieval-preview__text">
                   {String(ch['text_preview'] ?? ch['text'] ?? '')}
                 </div>

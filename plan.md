@@ -4,6 +4,10 @@ This document turns the product vision into **implementable phases**. Stack assu
 
 **Implementation notes (repo):** Backend `POST /api/pipeline/credentials` and `POST /api/pipeline/verify-key`; frontend [`SettingsBar`](frontend_v2.0/src/components/SettingsBar.tsx), [`openrouterStorage`](frontend_v2.0/src/utils/openrouterStorage.ts), [`exportRun`](frontend_v2.0/src/utils/exportRun.ts); [`README.md`](README.md) documents OpenRouter setup.
 
+**This release (next):** [Phase 11 — Resizable workspace layout](#phase-11--resizable-workspace-layout) — remove fixed `vh`/band heights so panels **flow and resize** (auto + optional drag); stop overlap with the embedding section and run panel.
+
+**Shipped:** [Phase 10 — Advanced RAG & LLM pedagogy](#phase-10--advanced-rag--llm-pedagogy-this-release).
+
 ---
 
 ## Principles (apply in every phase)
@@ -151,6 +155,79 @@ This document turns the product vision into **implementable phases**. Stack assu
 
 ---
 
+## Phase 10 — Advanced RAG & LLM pedagogy (this release)
+
+**Goal:** A newcomer can use only the UI to explain **what filled the context window**, **which chunks grounded the answer**, **why two query formulations retrieve different sets**, and **how candidate chunks were ranked**.
+
+| ID | Task | Done |
+|----|------|------|
+| 10.1 | **Context budget meter** — Approximate token usage for instructions + retrieved chunks + user query vs a nominal limit; brief copy on truncation and why it matters. | [x] |
+| 10.2 | **Citations / grounding** — Number retrieved chunks in the assembled prompt; show the same indices next to the model answer; optional **citation inspector** (click a ref → scroll/highlight chunk). | [x] |
+| 10.3 | **Score breakdown** — Per hit: similarity score, rerank score when reranking is used, and a short qualitative hint (e.g. strong vs marginal match). | [x] |
+| 10.4 | **Chunking & cost intuition** — Extend existing chunk preview (Phase 3) with **token estimates** (or clear “approx tokens per chunk”) so overlap/size tradeoffs are visible before embed cost. | [x] |
+| 10.5 | **Query experiment (A/B)** — One concrete alternate path (e.g. query rewrite or second retrieval variant); **side-by-side** ranked lists or answers vs baseline so users see retrieval-driven differences. | [x] |
+| 10.6 | **Per-node “Why this step?”** — Short panel or expander per node kind: purpose, common failures, what to verify; complements [`GlossaryModal`](frontend_v2.0/src/components/GlossaryModal.tsx). | [x] |
+| 10.7 | **Run narrative** — Single place after a full run: ordered stages, timings, chunk/top-k/token **counts**, with links into inspector sections (builds on Phase 2.2 / 8.1 but framed for teaching). | [x] |
+
+**Where (Phase 10):** [`tokenEstimate.ts`](frontend_v2.0/src/utils/tokenEstimate.ts), [`nodeWhy.ts`](frontend_v2.0/src/utils/nodeWhy.ts), [`assemblePrompt.ts`](frontend_v2.0/src/utils/assemblePrompt.ts) · [`ExecutionOutputs.tsx`](frontend_v2.0/src/components/ExecutionOutputs.tsx) (context budget, citations, score hints) · [`Inspector.tsx`](frontend_v2.0/src/components/Inspector.tsx) (Why this step?, chunk tokens, prompt live estimate, retrieval preview + doc filter) · [`QueryExperimentPanel.tsx`](frontend_v2.0/src/components/QueryExperimentPanel.tsx) · [`RunNarrative.tsx`](frontend_v2.0/src/components/RunNarrative.tsx) · [`App.tsx`](frontend_v2.0/src/App.tsx) · backend [`pipeline.py`](backend/services/pipeline.py) (numbered context, `approx_input_tokens`, `source_chunks`, `preview_retrieval` + `selected_documents`).
+
+**Out of scope for this release:** Graph RAG, agentic multi-hop, full Self-RAG/CRAG, large families of new pipeline nodes, or new LLM providers beyond the current OpenRouter-oriented flow.
+
+**Exit criteria:** Same as **Goal** above; screenshots or README “Teaching with this playground” blurb updated when stable.
+
+**Suggested build order within Phase 10:** 10.1 → 10.2 → 10.3 → 10.6 (mostly UI copy + wiring) in parallel with 10.4; then 10.5 (needs clearest single A/B story); finish with 10.7 once metrics are stable.
+
+---
+
+## Phase 11 — Resizable workspace layout
+
+**Problem:** The main column stack mixes **fixed `vh` caps**, **nested scroll regions**, and a **tall “3D embedding” strip**. That produces clipped inspector/run UI and bars that appear to sit **on top of** the node config panel (especially on shorter viewports).
+
+**Goal:** One predictable page flow: **no overlapping regions**; section sizes follow **available viewport** and user preference. Prefer **automatic** distribution first, then **optional drag-to-resize** for power users.
+
+### Design direction
+
+1. **Single primary scroll (default)**  
+   - Treat the app as a **vertical document**: header → settings → **workspace row** → embedding section.  
+   - Avoid multiple nested `overflow: hidden` stacks unless each pane has a clear role (e.g. graph canvas vs sidebars).
+
+2. **Workspace row: fractional widths, not fixed pixel-only**  
+   - Keep a 3-column grid: palette \| canvas \| inspector+run.  
+   - Use `minmax()` for side columns and `minmax(0, 1fr)` for the canvas so flex/grid children can shrink.  
+   - **Row height:** derive from `min-height` + content, or `clamp()` / `svh` where helpful—not a pile of `50vh` caps on nested panels.
+
+3. **Inspector vs run panel: split pane**  
+   - **Auto mode:** Inspector gets natural height up to a **soft** max (`max-height` in `%` of workspace or `min(…, 40%)`), then internal scroll; run/output block uses remaining space OR follows below in the document (single outer scroll).  
+   - **Manual mode (Phase 11.2):** A **horizontal drag handle** between “node config” and “run / experiment” (or a vertical handle between workspace and embedding—pick one primary handle first to limit complexity).
+
+4. **Embedding section**  
+   - Give it a **bounded height** (`min-height` + `max-height` with internal scroll for the 3D/detail split) so it does not eat the whole viewport and shove the inspector under a “footer” feel.  
+   - Ensure it is **in normal document flow** below the workspace (not `position: fixed`).
+
+### Implementation options (choose in 11.1)
+
+| Option | Pros | Cons |
+|--------|------|------|
+| **A. CSS-only** (`clamp`, `fr`, one scroll, remove `vh` caps) | Zero deps, fast | No drag handles without extra UX |
+| **B. `react-resizable-panels`** | Battle-tested drag, persistence API | New dependency, learn API |
+| **C. Native `resize` on a wrapper** | No React lib | Clunky UX, inconsistent across browsers |
+
+**Recommendation:** **11.1** ship **option A** (layout correctness + overlap fix). **11.2** add **option B** (or a thin custom splitter) for **persisted** inspector/run split widths/heights in `localStorage`.
+
+### Tasks
+
+| ID | Task | Done |
+|----|------|------|
+| 11.1 | **Layout audit & auto-resize** — Remove/lift rigid `vh` caps on `.inspector` / nested panes; unify overflow so embedding actions never cover inspector; workspace grid uses `minmax(0, …)`; validate short + tall viewports. | [ ] |
+| 11.2 | **Drag resize (MVP)** — One resizable split (inspector height **or** right column width **or** workspace vs embedding height); persist keys in `localStorage`; keyboard-safe (optional). | [ ] |
+| 11.3 | **Polish** — Min/max constraints, cursor/`aria` on splitter, reset layout control; snapshot in README or in-app tip. | [ ] |
+
+**Exit criteria:** At 768px and 1440px widths, user can always see **Node config** and **Run pipeline** without overlap; embedding controls remain visible or scroll into view without obscuring the inspector; optional: splitter restores last size on reload.
+
+**Where (expected):** [`App.tsx`](frontend_v2.0/src/App.tsx), [`App.css`](frontend_v2.0/src/App.css); possible new `WorkspaceSplit.tsx` or `react-resizable-panels` wrapper.
+
+---
+
 ## Suggested implementation order
 
 ```text
@@ -158,6 +235,8 @@ Phase 1 → Phase 3 → Phase 4 → Phase 5 → Phase 6 → Phase 7
          ↘ Phase 2 can start early in parallel (copy + DAG)
 Phase 8 after core path works
 Phase 9 ongoing + hardening before “release”
+Phase 10 (pedagogy) after Phase 7 + 8 baseline; can overlap Phase 9 polish
+Phase 11 (layout) after Phase 10 or in parallel with small UI fixes
 ```
 
 ---
@@ -170,4 +249,7 @@ As you complete phases, tick items above and add short notes under each phase (e
 
 ## Revision
 
-Update this file when scope changes (e.g. add reranking as first-class, or move to BFF-only keys).
+- **2026-04-08** — Added **Phase 10 (this release)** for advanced RAG / LLM pedagogy: context budget, citations, score UX, chunk token hints, one A/B query experiment, per-node guidance, unified run narrative. Stretch items remain in Phases 5.3, 7.4, 8.3.
+- **2026-04-08** — Phase 10 **implemented** (numbered prompt context, citation UI, teaching meter, A/B panel, run narrative, `preview-retrieval` document filter).
+- **2026-04-08** — **Phase 11** drafted: resizable/adaptive workspace (remove fixed `vh` overlap; optional drag splits + `localStorage`).
+- Update this file when scope changes (e.g. add reranking as first-class, or move to BFF-only keys).
