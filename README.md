@@ -12,7 +12,6 @@ Interactive RAG (Retrieval-Augmented Generation) playground to **learn**, **visu
 
 ![RAG Playground demo](assets/demo.gif)
 
-> Put your recording at `assets/demo.gif` (repo root) to render this preview on GitHub.
 
 ## Purpose
 
